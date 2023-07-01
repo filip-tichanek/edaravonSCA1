@@ -31,7 +31,7 @@ From code02 and further, the codes have the following structure:
   The next sections define the specific outcome to be modelled (e.g., distance walked in an open field over 10 minutes) and include:
   - **data exploration** showing data distribution per group, and searching for possible covariates that need to be adjusted (e.g. sex)
   - **modelling** with the sections
-      - prior setting
+      - priors specification
       - model(s) fitting
       - model diagnostics (searching for signs of problems with convergence or insufficient sample size)
       - [posterior predictive check](https://cran.r-project.org/web/packages/bayesplot/vignettes/graphical-ppcs.html) to explore if simulations from the posterior distributions reconstruct our data well (whether the model fits data well and the distributional assumptions are met).
@@ -41,9 +41,9 @@ From code02 and further, the codes have the following structure:
       - posterior distribution of effect size (between-groups differences)
     
 
-### Prior setting
+### Priors specification
 
-Prior probability distributions for all fixed-effect parameters of Bayesian models were explicitly specified to have normal distribution on natural scale of the models (log for gamma models, logit for [beta-]binomial and beta models).
+Prior probability distributions for all fixed-effect parameters of Bayesian models were explicitly specified to have normal distribution on the natural scale of a given model (log for gamma models, logit for [beta-]binomial and beta models).
 
 Priors for the effect of edaravone treatment were set to have a mean value equal to zero (*mu = 0*), thus attributing the highest prior probability to the absence of an effect. In log- and logit-linked models, the prior *sigma* was set to 1.2. In Gaussian and robust models, prior sigma was set to 1.2 of standard deviations of the outcome in SCA1-specific data subset (sigma = 1.2 x SD[outcome *i*]), addressing the expectancy that the edaravone may improve but highly likely not resolve the SCA1 phenotype. 
 
