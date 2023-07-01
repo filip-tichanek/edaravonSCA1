@@ -1,0 +1,13 @@
+id,treatment,genotype,sex,cb_ml
+9,ctrl,wt,m,21.6384
+11,ctrl,wt,f,20.23608
+13,eda,sca,m,19.21008
+15,ctrl,sca,f,18.94968
+18,ctrl,sca,m,16.85352
+19,eda,sca,f,16.55568
+20,ctrl,sca,f,18.49536
+23,ctrl,wt,m,18.63144
+29,ctrl,wt,f,21.43392
+31,eda,sca,f,17.87376
+36,eda,sca,m,18.33792
+37,ctrl,sca,m,18.49008

@@ -1,0 +1,13 @@
+hist_id,id,treat,genotype,sex
+6367,9,ctrl,wt,m
+6368,11,ctrl,wt,f
+6370,13,eda,sca,m
+6372,15,ctrl,sca,f
+6376,18,ctrl,sca,m
+6377,19,eda,sca,f
+6378,20,ctrl,sca,f
+6380,23,ctrl,wt,m
+6401,29,ctrl,wt,f
+6403,31,eda,sca,f
+6416,36,eda,sca,m
+6417,37,ctrl,sca,m
