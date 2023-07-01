@@ -1,10 +1,8 @@
 # edaravonSCA1
-This page shows all data and full [R](https://www.r-project.org/) code for the study [Sucha et al. (2023, *International Journal of Molecular Science*)](https://www.mdpi.com/1422-0067/24/13/10689).
+This page shows all data and full [R](https://www.r-project.org/) code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
 
 **Citation**: 
 > Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
-
-### Organization of the analysis
 
 This page shows HTML files with commented code and its output, and R code in quarto (.qmd) file. To explore the code and results, download the html file and open it in your browser. You can download it by clicking on the file and then clicking on 'download raw file' (icon for downloading on the right)
 
@@ -12,7 +10,7 @@ Bayesian regression was used, using [brms](https://cran.r-project.org/web/packag
 
 The following codes are shown:
 
-- **code01_data_functions*** imports data, packages, and defines custom functions (thoroughly described)
+- ***code01_data_functions*** imports data, packages, and defines custom functions (thoroughly described)
 - ***code02_behav*** shows an analysis of emotional-related behavioural indicators using  *Forced swim*, *sucrose preference* and *Open field* tests. The analysis of the 1st outcome (*Forced swim*) **provides a detailed guide** on how to interpret the outputs of Bayesian diagnostics, *posterior predictive check* as well as resulting posterior distributions. Thus, reading this will help to understand the next codes. Models were fitted either with Gaussian, gamma (with log-link, only-positive right-tailed outcomes) or beta (logit-link, continuous proportions/probabilities) likelihood distribution
 - ***code03_grip_strength*** shows analysis of *grip strength* with gamma model with log-link and with the factor of the individual mouse (*id*) as a random intercept
 - ***code04_CatWalk*** shows an analysis of Gait Abnormalities. Besides Bayesian regression (Gaussian multivariate regression), this analysis was simultaneously done in a classical (frequentist) framework using PERMANOVA. 
@@ -21,9 +19,9 @@ The following codes are shown:
 - ***code07_elisa*** analysis of hippocampal and cerebellar levels of interleukin 6 (IL6) and cerebellar levels of brain-derived neurotrophic factor (BDNF). Analysed via Gaussian regression
 - ***code08_mitochondria_respiration*** shows an analysis of mitochondrial respiration capacity in both the cerebellar (*cb*) and hippocampal (*hp*) tissue. Respiration was standardized by either tissue wet weight of (*mg*) or by citrate synthase activity (*cs*), across different phases experiment. Data per tissue and standardization were analysed separately, using multivariate Gamma models with log-link, where respiration in different states of the substrate-uncoupler-inhibitor protocol represented multiple outcomes.
 - ***code09_citrate_syn*** analyze citrate synthase activity in both cerebellar and hippocampal tissue, using gamma models with log-link 
-- ***code10_calbindin*** shows an analysis of calbindin immunofluorescence intensities in the cerebellar molecular layer. The analysis was done via a hierarchical Gaussian model (with a random intercept of *slice* nested in the random intercept of *id*/*subject*, and with the cerebellar region (hemisphere vs. vermis) and immunofluorescence intensity in the neighbouring granular layer as covariates. 
+- ***code10_calbindin*** shows an analysis of calbindin immunofluorescence intensities in the cerebellar molecular layer. The analysis was done via a hierarchical Gaussian model (with a random intercept of *slice* nested in the random intercept of *id*/*subject*), and with the cerebellar region (hemisphere vs. vermis) and immunofluorescence intensity in the neighbouring granular layer as covariates. 
 - ***code11_cb_volume*** analyze cerebellar molecular layer volume. As data exploration suggested outlying values (of both directions), robust regression with student t-distribution and with random intercept (*id*) was applied.
-- ***code12_hp_volume*** analyzes hippocampal volumes via robust regression with student t-distribution likelihood and with random-intercept of *id*
+- ***code12_hp_volume*** analyzes hippocampal volumes via robust regression with student t-distributed likelihood and with random-intercept of *id*
 - ***code13_psa_ncam*** shows analysis of PSA-NCAM immunofluorescence intensity, presumably reflecting processes related to neuroplasticity. We used Bayesian hierarchical generalized additive model with Gamma distribution and random intercept (random effect: mouse *id*). As there was an apparent sex-related difference, further confirmed with leave-one-out cross-validation, the sex factor was included in the final model. As the PSA-NCAM IF varied across slices from the frontal to caudal regions, the order of slices was included as a factor with a non-linear effect, fitted with thin-plate splines limited to 3 knots.
 
 From code02 and further, the codes have the following structure:
@@ -36,7 +34,7 @@ From code02 and further, the codes have the following structure:
       - prior setting
       - model(s) fitting
       - model diagnostics (searching for signs of problems with convergence or insufficient sample size)
-      - [posterior predictive check](https://cran.r-project.org/web/packages/bayesplot/vignettes/graphical-ppcs.html) to explore if simulations from the posterior distributions reconstruct our data (in other words, if the model fits data well).
+      - [posterior predictive check](https://cran.r-project.org/web/packages/bayesplot/vignettes/graphical-ppcs.html) to explore if simulations from the posterior distributions reconstruct our data well (whether the model fits data well and the distributional assumptions are met).
       - extraction of posterior samples (needed for visualisation)
   - **visualisation** with code showing
       - data and group-specific predictions (and their 95% credible interval)
