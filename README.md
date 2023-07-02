@@ -4,9 +4,9 @@ This page shows all data and full [R](https://www.r-project.org/) code for the s
 **Citation**: 
 > Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
 
-This page shows HTML files with commented code and its output, and R code in quarto (.qmd) file. To explore the code and results, download the html file and open it in your browser. You can download it by clicking on the file and then clicking on 'download raw file' (icon for downloading on the right)
+This page shows HTML files with commented code and its output, and R code in quarto (.qmd) file. To explore the code and results, download the html file and open it in your browser, or click on link below (you will see the document on *RPubs* page). You can download it by clicking on the file and then clicking on 'download raw file' (icon for downloading on the right)
 
-Bayesian regression was used, using [brms](https://cran.r-project.org/web/packages/brms/index.html) R package
+Bayesian regression was used with [brms](https://cran.r-project.org/web/packages/brms/index.html) R package
 
 The following codes are shown:
 
