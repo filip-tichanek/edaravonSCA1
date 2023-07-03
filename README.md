@@ -14,7 +14,7 @@ The following codes are shown:
 - [***code02_behav***](https://rpubs.com/filip_tichanek/edaSCA_code02) shows an analysis of emotional-related behavioural indicators using  *Forced swim*, *sucrose preference* and *Open field* tests. The analysis of the 1st outcome (*Forced swim*) **provides a detailed guide** on how to interpret the outputs of Bayesian diagnostics, *posterior predictive check* as well as resulting posterior distributions. Thus, reading this will help to understand the next codes. Models were fitted either with Gaussian, gamma (with log-link, only-positive right-tailed outcomes) or beta (logit-link, continuous proportions/probabilities) likelihood distribution
 
 ! NEXT will be uploaded on 3rd, 4th and 5th of July, 2023
-- ***code03_grip_strength*** shows analysis of *grip strength* with gamma model with log-link and with the factor of the individual mouse (*id*) as a random intercept
+- ***code03_grip_strength*** shows analysis of *grip strength* with gamma model with log-link
 - ***code04_CatWalk*** shows an analysis of Gait Abnormalities. Besides Bayesian regression (Gaussian multivariate regression), this analysis was simultaneously done in a classical (frequentist) framework using PERMANOVA. 
 - ***code05_rotarod*** shows an analysis of motor coordination on the *Rotarod* test using hierarchical (mixed-effects) Bayesian Gamma (log-linked) regression
 - ***code06_T_maze*** shows analysis of cognition (learning and cognitive flexibility) in *T-maze*. The summarized results are analysed as univariate outcomes via beta-binomial regression
