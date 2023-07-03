@@ -1,0 +1,1339 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "Analysis of behaviour"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: false
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+# Upload of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+library(bayesplot)  
+  } ) )
+```
+
+# Data import and wrangling
+
+```{r}
+
+## import of data
+load("source_data/myEnvironment.RData")
+
+## defining outcome variable 'fst_prop', indicating proportion in immobile state
+## during forced swimming test. As the immobility in registred only if it took 
+## over 2 seconds, the two seconds were added. The variable ('immobile_min') originally 
+## represented the total immobility time in minutes.
+## Now it is just proportion. 
+behav$fst_prop<-( (behav$immobile_min+(2/60)) /8)
+
+
+## defining the variable 'sugar_prop' that will be used as outcome variable
+## in the analysis of sucrose prefference
+behav$sugar_prop <- behav$sugar_water_ratio / (behav$sugar_water_ratio+1)
+
+## defining 'of_distance' variable, that is sum of distance walked
+## over 10 minutes (in raw table, the distance is per minute) and is in
+## units of meters (originally it was in centimeters)
+behav$of_distance<-rowSums(behav[,c(8:17)])/100
+
+summary(behav[, c('fst_prop', 'sugar_prop', 'of_distance')])
+```
+
+# Immobility in forced swim test
+
+## Data exploration
+
+```{r}
+plot((behav$immobile_min)~behav$group,las=2,xlab="",
+     col=cola) 
+
+plot(behav$immobile_min~behav$group_sex,las=2,xlab="",
+     col=cola[c(1,1,2,2,3,3,4,4)]) 
+
+hist(behav$fst_prop)
+
+```
+
+According to plots, male sex may increases the immobility. The sex-difference seems homogeneous across groups (NO sex interaction needed to include). Dispersion is not noticeably different among the groups.
+
+## Modelling
+
+We will try fit the model using Gaussian as well as beta regression (as the outcome - the proportion of the immobility state - is bounded to 0 and 1, beta regression may be more natural). We will fit both and will check posterior predictive check (**PPC**) to explore how well the both models fit the data.
+
+As there is indication of that male sex may be associated with an increaed immobility, we will fit two versions of model - one ignoring the sex effect, the second including the sex.
+
+### Prior specification
+
+Lets look what should be prior for genotype effect, utilizing previous information from Tichanek et al.
+
+Firstly, what should be prior for and intercept if we used Gaussian model?
+
+```{r}
+
+## re-setting reference group
+behav$group<-relevel(behav$group,ref='ctrl.sca')
+
+## defining the variable 'fst_immobility' in previously published data
+young_scirep$fst_immobility <- (  ( 2+rowSums(young_scirep[,c(100:105)]) ) /360)
+
+## mean immobility proportion in SCA1 mice
+mean(young_scirep[young_scirep$genotype=="tg+",]$fst_immobility)
+
+## mean immobility proportion in our current data, acrros all groups 
+mean(behav$fst_prop)
+
+## standard deviation of the immobility proportion x 5 and 1.2
+sd(behav$fst_prop)*c(5, 1.2)
+
+sd(young_scirep[young_scirep$genotype=="tg+",]$fst_immobility) * 1.2
+```
+
+*Mu* for intercept will be set to the value between 0.51 and 0.29, i.e. 0.4
+
+*Sigma* for the intercept will be set to SD of the *fst_prop* x 5, i.e. 0.97
+
+How to set prior for the genotype effect?
+
+```{r}
+## Model based on data of Tichanek et al.
+model_fst<-glmmTMB(fst_immobility~genotype,data=young_scirep)
+
+## model results
+fixef(model_fst)
+
+## What is reccomented prior?
+prios(model_fst)
+```
+
+Previous data indicates that WT genotype is related to reduced immobility and our prior specification will reflects it. However, prior will be conservative and will be kept to influence estimation in small extent. Thus, prior will cover both zero effect as well as effect estimated with previous data. We will use the value calculated above, i.e. *mu* = 0.15, *sigma* = 0.225
+
+For edaravone effect, we will use zero-effect-centered prior with *sigma* = 1.2 x SD of the outcome, i.e. 0.23
+
+The same prior as for edaravone effect will be used also for the effect of male *sex*.
+
+As we will fit 2 Gaussian models (one WITH *sex* effect, second ignoring the *sex*), we will define two priors.
+
+```{r}
+# prior01 - without sex
+prior01 <- c(set_prior("student_t(3,0.4,0.97)", class = "b", coef = "Intercept"),
+             set_prior("normal(-0.15,0.225)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(-0.15,0.225)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,0.23)"    , class = "b", coef = "groupeda.sca"))
+
+# prior02 - with sex
+prior02 <- c(set_prior("student_t(3,0.4,0.97)", class = "b", coef = "Intercept"),
+             set_prior("normal(-0.15,0.225)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(-0.15,0.225)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,0.23)"    , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0,0.23)"    , class = "b", coef = "sex_num"))
+```
+
+Similarly, we will define priors for beta models, using *prios* function and previous data, and using SD in the outcome variables
+
+```{r}
+
+## 'mu' for prior of intercept
+mean(c(logit(mean(young_scirep[young_scirep$genotype=="tg+",]$fst_immobility)),
+       logit(mean(behav$fst_prop))))
+
+## 'sigma' for prior of intercept
+sd(logit(behav$fst_prop))*5
+
+## model with data from Tichanek et al. to get prior for genotype effect 
+model_of<-glmmTMB(fst_immobility~genotype,data=young_scirep,
+                  family=beta_family(link="logit"))
+summary(model_of)
+prios(model_of)
+```
+
+Defining the priors for beta regression models
+
+```{r}
+# without sex
+prior03 <- c(set_prior("student_t(3,-0.4,7.14)", class = "b", coef = "Intercept"),
+             set_prior("normal(-0.72,1.08)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(-0.72,1.08)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"))
+
+# sex included
+prior04 <- c(set_prior("student_t(3,-0.4,7.14)", class = "b", coef = "Intercept"),
+             set_prior("normal(-0.72,1.08)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(-0.72,1.08)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0,1.2)"    , class = "b", coef = "sex_num"))
+```
+
+### Fitting models ignoring sex
+
+Now we have priors and can fit the models.
+
+As we defined prior for *Intercept* term, we will include the formula *0 + Intercept*. We will use 8000 samples (from which 2000 will 'warmup' for mapping of probability landscape) per each of 2 chains. To reduce risk of convergence issues, we will increase 'adapt_delta' to 0.99 (default is 0.8)
+
+At first, we will fit models ignoring the effect of *sex* and will firstlu decide whether to use Gaussian or beta model
+
+```{r}
+## Gaussian model without sex factor
+fst_model_01 <- run_model(
+              brm(fst_prop ~ 0+ Intercept+group,
+                  data = behav, 
+                  prior = prior01,
+                  family = "Gaussian", save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                  'output/brm/fst_model_01', reuse = TRUE)
+
+fst_model_02 <- run_model(
+              brm(fst_prop ~0+Intercept+group,
+                  data=behav, prior = prior03,
+                  family=Beta(link="logit", link_phi="log"),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                  'output/brm/fst_model_02', reuse = TRUE)
+
+```
+
+### Diagnostics of models ignoring sex
+
+We mean here diagnostics of convergence and sufficient size of posterior samples. We will use:
+
+(i) plotting trace of MCMC chains. Both chains should be mixed, the curves should be random without noticeable autocorrelations.
+
+(ii) *Rhat* from model summary: 1 indicates convergence
+
+(iii) *Bulk_ESS* and *Tail_ESS* from summary output: should be \> 1000-2000, idealy more for paramters of interest
+
+```{r}
+## trace plots
+mcmc_trace(fst_model_01)
+mcmc_trace(fst_model_02)
+
+summary(fst_model_01)
+summary(fst_model_01)
+```
+
+Convergence of both models is fine
+
+### Posterior predictive checks
+
+**data density**: the figure shows density of the outcome variable (thick line) and densities of artificial data from simulations based on Bayesian model estimates (slimmer lines). The thick line should not deviate much from the slimmer lines (in that case, model does not predict data well and does not fit the data appropriately).
+
+However, if model includes random effect(s) (providing shrinkage), simulated and actual data may differ.
+
+```{r}
+pla<-pp_check(fst_model_01,type='dens_overlay',ndraws = 50)
+plb<-pp_check(fst_model_02,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+```
+
+Here, both Gaussian (A) and beta (B) models seems fine as they predict data well.
+
+**grouped data density** shows the same as previous, but per group. This is useful for evaluation potential group-specific shapes of data distribution (e.g. different spread of outcome)
+
+```{r, fig.height=7, fig.width=5 }
+pla<-pp_check(fst_model_01,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(fst_model_02,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+```
+
+Both models seem fine
+
+**scatter plot** shows average predictions (x-axis) vs. data. For Gaussian models, moving along X-axis should not change spread of datapoints
+
+```{r, fig.height=6, fig.width=4}
+pla<-pp_check(fst_model_01,type='scatter_avg') 
+plb<-pp_check(fst_model_02,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+```
+
+Seems fine
+
+**max, min** shows predicted vs. actual minimal and maximal value of outcome. Dark blue point should be among the light-blue points
+
+```{r, fig.height=5, fig.width=5}
+pla<-pp_check(fst_model_01,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(fst_model_02,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+```
+
+We see that Gaussian model predicts smaller (negative) minimal values of the proportion. As the outcome is proportion which may start from zero, the prediction of negative values does not make sense. Beta regression does better work here
+
+**mean, sd** shows predicted vs. actual mean and SD of the outcome
+
+```{r, fig.height=5, fig.width=5}
+pla<-pp_check(fst_model_01,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(fst_model_02,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+```
+
+Both models predict mean and SD well.
+
+Are there too influential observations? All pareto estimates should have k \< 0.7
+
+```{r, fig.height=6, fig.width=6}
+par(mfrow=c(1,2))
+plot(loo(fst_model_01));loo(fst_model_01)
+plot(loo(fst_model_02));loo(fst_model_02)
+```
+
+Seems fine
+
+### Model including sex
+
+According to PPC, we can see that beta regression model the data more realistically and we will thus use beta regression model.
+
+However, we observed that male sex may be associated with higher magnitude of immobility in the Forced Swimming Test. Should we include the sex factor to the model? We will use leave-one-out cross-validation (LOO-CV) to estimate whether such model provides more accurate out-of-sample prediction
+
+```{r}
+fst_model_03 <- run_model(
+            brm(fst_prop ~0+Intercept+group+sex_num,
+                  data=behav, prior = prior04,
+                  family=Beta(link="logit", link_phi="log"),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                  'output/brm/fst_model_03', reuse = TRUE)
+
+mcmc_trace(fst_model_03)
+summary(fst_model_03)
+```
+
+Convergence of the model and effective size of samples are fine. Conclusions drawn by both beta models (ignoring vs. including sex) are basically the same. The decision thus have minimal practical implication.
+
+Lets compare the models using the LOO-CV
+
+```{r}
+fst_model_02 <- add_criterion(fst_model_02, criterion = "loo")
+fst_model_03 <- add_criterion(fst_model_03, criterion = "loo")
+loo_compare(fst_model_02,fst_model_03)
+```
+
+No practical difference (including sex had slightly better score, but standard error of the difference is very high and the both models are practically the same. Inclusion of sex is not helpful. We will use model 'fst_model_03', ie beta model ignoring sex.
+
+## Posterior draws extraction
+
+To visualize and summarize model, we will extract posterior samples of the between-groups difference.
+
+```{r}
+
+## data frame of posterior samples
+post_fix<-as.data.frame(fst_model_02, variable = c("b_Intercept","b_groupctrl.wt",
+                                                   "b_groupeda.wt","b_groupeda.sca"))
+## re-naming the Intercept (= SCA_0 group)
+names(post_fix)[1]<-"sca_ctrl"
+
+## obtaining posterior samples/draws for group-specific proportion of immobility
+post_fix$wt_ctrl<-post_fix$sca_ctrl+post_fix$b_groupctrl.wt
+post_fix$wt_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.wt
+post_fix$sca_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.sca
+
+## differnce between WT_0 and WT_E group
+post_fix$wt_contrast<-post_fix$wt_eda-post_fix$wt_ctrl
+
+## obtaining median estimate and bound of 95% credible intervals
+groupquant<-sapply(post_fix[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+
+## the selected model is beta model with logit link. Lets to rescale prediction 
+## back to proportions
+groupquant<-inv.logit(groupquant)
+```
+
+## Data and model visualization
+
+Next, we will visualize data and model. First plot will show data points and estimated prediction and 95% credible interval for the group prediction. The second will show posterior distribution of between-groups differences in the estimated proportion of time spent in immobility.
+
+As we used beta model, we will show the effect (between-groups differences) in ***odds ratio***, implying how many times are odds for being immobile in the given time different in one group compared to the second group. Thus, zero effect is OR = 1.
+
+The second plot (posterior distributions) will include information about 95% credible interval about effect size and *probability of direction* (***PD***, i.e. probability that the effect goes in particular direction - is positive or negative). The higher *PD*, the higher estimated probability that there is difference between the groups.
+
+```{r, fig.height=4.11, fig.width=7.5}
+
+## ordering of groups
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+## setting spacing of plots
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+
+## setting range of Y-axis
+range<-c(0,1);scal<-range[2]-range[1]
+
+## setting range of X-axis
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+
+## plot
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Proportion of immobility",las=1, axes=FALSE,cex.lab=1)
+
+## adding grey background with white lines
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+0.1;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+## showing distribution of data
+vioplot(behav$fst_prop~behav$group,col=colb,at=c(1:4),add=T,
+        border=cola,axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+## showing individual data points
+beeswarm(behav$fst_prop~behav$group,col=colc,at=c(1:4),add=T,pwpch=(16.5+behav$sex_num) )
+
+## showing group-specific predictions and 95% CI
+tp<-groupquant[3,]
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant[1,xx],groupquant[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>4){break}}
+
+## providing axis 
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),
+     labels=c(rep("",length(seq(range[1],range[2],by=0.2)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+
+## labelling the plot
+text(c(1:4),c(rep(range[1]-0.046*scal,4)),xpd=T,cex=1.1,col=cola,
+     c("Wt","Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola,
+     c("0","edv", "0", "edv"))
+
+ypos<-0.9;xpos=1.4
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+## setting spacing pf the 2nd plot
+par(mar=c(2,0,0,0))
+
+## making data frame of effect sizes (groups differences)
+dif<-data.frame(post_fix$wt_contrast,post_fix$b_groupeda.sca,
+                post_fix$b_groupctrl.wt)
+
+## rescaling the effect to Odds Ratio (from log(OR), i.e. log-odds)
+dif<-exp(dif)
+
+## x-label and tickmarks
+yla<-"Odds ratio for immobility"
+tckk=-0.018
+ste<-seq(0.2,2.8,by=0.2)
+
+## drawing the posterior distributions
+mons_poste(dif,1)
+
+## labelling the posterior distribution plots
+zpos=seq(0,1,1/3)
+xx=1;ind=0.3;xpol<-2.1
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+```
+
+## Conclusion
+
+It is clear that SCA1 mice (on saline) have clearly larger immobility, but the effect of edaravone is not clear (is uncertain) and likely span from edaravone treated SCA1 reaching 0.42 times to 1.17 times larger immobility
+
+# Sucrose preference
+
+## Data exploration
+
+```{r, fig.height=8, fig.width=4}
+par(mar=c(5,3.5,1,1))
+par(mgp=c(1.9,0.7,0))
+par(mfrow=c(3,1))
+
+plot((behav$sugar_prop)~behav$group,las=2,xlab="",
+     col=cola) 
+
+plot((behav$sugar_prop)~behav$group_sex,las=2,xlab="",
+     col=cola[c(1,1,2,2,3,3,4,4)])
+
+hist(behav$sugar_prop)
+```
+
+In contrast to FSR, there is no apparent and consistent effect of sex on the sucrose preference. The distribution seems as could be expected for proportions concentrated close to 0 or 1 (heavy tail in the direction toward 0.5).
+
+There is no need to try to approximate the data with Gaussian distribution, beta regression is clear choice here.
+
+## Modelling
+
+### Prior specification
+
+Due to methodological differences from sucrose test in Tichanek et al. and here, the previous results will not be used here for prior specification
+
+```{r}
+behav$group<-relevel(behav$group,ref='ctrl.sca')
+
+
+logit(mean(behav[behav$genotype=="sca",]$sugar_prop))
+logit(mean(behav$sugar_prop))
+sd(logit(behav$sugar_prop))*5
+```
+
+Prior specification
+
+```{r}
+prior01 <- c(set_prior("student_t(3,0.76,3.5)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0,2)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"))
+```
+
+### Model fitting and diagnostics
+
+```{r}
+sugar_model_01 <- run_model(
+              brm(sugar_prop ~0+Intercept+group,
+                  data=behav, prior = prior01,
+                  family=Beta(link="logit", link_phi="log"),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                  'output/brm/sugar_model_01', reuse = TRUE)
+              
+mcmc_trace(sugar_model_01)
+summary(sugar_model_01)
+```
+
+Convergence is fine, ESS are sufficient
+
+### PPC
+
+Quick version of PPC
+
+```{r}
+pp_check(sugar_model_01,type='dens_overlay',ndraws = 50)
+pp_check(sugar_model_01,type='dens_overlay_grouped',ndraws = 50,group='group') 
+pp_check(sugar_model_01,type='scatter_avg')
+pp_check(sugar_model_01,type="stat_2d", stat = c("max", "min"),ndraws=200)
+pp_check(sugar_model_01,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot(loo(sugar_model_01));loo(sugar_model_01)
+```
+
+Diagnostics is not so nice as in previous example. E.g., max values are smaller than generally expected, especially when taking account low minimal values. So, the high range of the proportion seems to be sharply restricted but the low range seems to be unexpectedly low. This reduces reliability of the model.
+
+Thus, if there was some suggestions of plausible effect, non-parametric estimation (based on non-parametric bootstrap) may provide useful validation. Here the effects seem negligible so no validation is necessary.
+
+## Posterior draws extraction
+
+```{r}
+post_fix<-as.data.frame(sugar_model_01, variable = c("b_Intercept","b_groupctrl.wt",
+                                                   "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix)[1]<-"sca_ctrl"
+
+post_fix$wt_ctrl<-post_fix$sca_ctrl+post_fix$b_groupctrl.wt
+post_fix$wt_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.wt
+post_fix$sca_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.sca
+post_fix$wt_contrast<-post_fix$wt_eda-post_fix$wt_ctrl
+
+groupquant<-sapply(post_fix[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant<-inv.logit(groupquant)
+```
+
+## Data and model vizualisation
+
+```{r, fig.height=4.11, fig.width=7.5}
+
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+range<-c(0,1);scal<-range[2]-range[1]
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Relative sugar consumption (proportion)",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+0.1;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(behav$sugar_prop~behav$group,col=colb,at=c(1:4),add=T,
+        border=cola,axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+beeswarm(behav$sugar_prop~behav$group,col=colc,at=c(1:4),add=T,pwpch=(16.5+behav$sex_num) )
+
+tp<-groupquant[3,]
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant[1,xx],groupquant[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>4){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),
+     labels=c(rep("",length(seq(range[1],range[2],by=0.2)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:4),c(rep(range[1]-0.046*scal,4)),xpd=T,cex=1.1,col=cola,
+     c("Wt","Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola,
+     c("0","edv", "0", "edv"))
+
+ypos<-0.14;xpos=1.4
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+# probability distributions 
+par(mar=c(2,0,0,0))
+dif<-data.frame(post_fix$wt_contrast,post_fix$b_groupeda.sca,
+                post_fix$b_groupctrl.wt)
+dif<-exp(dif)
+yla<-"Odds ratio for relative sugar consumption"
+tckk=-0.018
+ste<-seq(0.2,2.2,by=0.2)
+mons_poste(dif,1)
+
+zpos=seq(0,1,1/3)
+xx=1;ind=0.3;xpol<-2.1
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+
+```
+
+# Distance walked in open field
+
+## Data exploration
+
+```{r, fig.height=8, fig.width=4}
+
+## set spacing
+par(mar=c(5,3.5,1,1))
+par(mgp=c(1.9,0.7,0))
+par(mfrow=c(3,1))
+
+## plotting
+plot(behav$of_distance~behav$group,las=2,xlab="",
+     col=cola) 
+
+plot(behav$of_distance~behav$group_sex,las=2,xlab="",
+     col=cola[c(1,1,2,2,3,3,4,4)]) 
+
+hist(behav$of_distance, 20)
+```
+
+No apparent effect of sex. Distribution seems to be symmetric and could be potentially approximated via Gaussian distribution. Alternatively, distance walked may be modelled with Gamma distribution
+
+## Modelling
+
+### Prior specification
+
+Exploring data to get prior for gamma model
+
+```{r}
+behav$group<-relevel(behav$group,ref='ctrl.sca')
+
+log(mean(young_scirep[young_scirep$genotype=="tg+",]$of.distance)/100)
+log(mean(behav$of_distance))
+sd(log(behav$of_distance))*5
+
+model_pri<-glmmTMB((of.distance/100)~genotype,family=Gamma(link="log"),data=young_scirep)
+summary(model_pri)
+prios(model_pri)
+```
+
+Setting the prior for gamma model
+
+```{r}
+prior01 <- c(set_prior("student_t(3, 3.7, 1.77)", class = "b", coef = "Intercept"),
+             set_prior("normal(0.2,0.31)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0.2,0.31)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"))
+```
+
+Exploring data to get prior for Gaussian model
+
+```{r}
+sd(behav[behav$genotype=="sca",]$of_distance)*c(5, 1.2)
+sd(behav$of_distance)*c(5, 1.2)
+
+mean(c(mean(young_scirep[young_scirep$genotype=="tg+",]$of.distance/100),
+mean(behav$of_distance)))
+
+
+model_pri<-glmmTMB((of.distance/100)~genotype,data=young_scirep)
+summary(model_pri)
+prios(model_pri)
+```
+
+Prior for Gaussian model
+
+```{r}
+prior02 <- c(set_prior("student_t(3, 40.5, 60)", class = "b", coef = "Intercept"),
+             set_prior("normal(9.1, 13.7)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(9.1, 13.7)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0, 14.4)"  , class = "b", coef = "groupeda.sca"))
+```
+
+## Fitting models and checking convergence and ESS
+
+```{r}
+of_dist_model_01 <- run_model(
+            brm(of_distance ~0+Intercept+group,
+                  data=behav, prior = prior01,
+                  family=Gamma(link="log"),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                  'output/brm/of_dist_model_01', reuse = TRUE)
+
+
+of_dist_model_02 <- run_model(
+              brm(of_distance~0+Intercept+group,
+                    data=behav, prior = prior02,
+                    family=gaussian(),
+                    save_pars = save_pars(all = TRUE),
+                    iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                    control = list(adapt_delta = 0.99)),
+                  'output/brm/of_dist_model_02', reuse = TRUE)            
+
+mcmc_trace(of_dist_model_01)
+mcmc_trace(of_dist_model_02)
+
+summary(of_dist_model_01)
+summary(of_dist_model_02)
+
+```
+
+Convergence and ESS are fine for both models.
+
+## PPC
+
+```{r, fig.height=6, fig.width=5}
+pla<-pp_check(of_dist_model_01,type='dens_overlay',ndraws = 50)
+plb<-pp_check(of_dist_model_02,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_dist_model_01,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(of_dist_model_02,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_dist_model_01,type='scatter_avg') 
+plb<-pp_check(of_dist_model_02,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_dist_model_01,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(of_dist_model_02,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_dist_model_01,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(of_dist_model_02,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+### Are there too influential observations?
+par(mfrow=c(1,2))
+plot(loo(of_dist_model_01));loo(of_dist_model_01)
+plot(loo(of_dist_model_02));loo(of_dist_model_02)
+```
+
+In both models, no observation has overly high influence. Gamma model seems to have slightly better PPC (at least in terms of predicted minimal value where Gaussian model sometimes predicts negative distance walked)
+
+## Posterior draws extraction and visualization
+
+Posterior draws extraction. Note the we will use exponent of posterior prediction as we used log-link. Then, we will get fold-difference (fold-change) as an effect size, indicating how many time walked one group larger distance than the second group
+
+```{r}
+post_fix<-as.data.frame(of_dist_model_01, variable = c("b_Intercept","b_groupctrl.wt",
+                                                   "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix)[1]<-"sca_ctrl"
+
+post_fix$wt_ctrl<-post_fix$sca_ctrl+post_fix$b_groupctrl.wt
+post_fix$wt_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.wt
+post_fix$sca_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.sca
+post_fix$wt_contrast<-post_fix$wt_eda-post_fix$wt_ctrl
+
+groupquant<-sapply(post_fix[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant<-exp(groupquant)
+```
+
+Visualization
+
+```{r, fig.height=4.11, fig.width=7.5}
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+range<-c(0,100);scal<-range[2]-range[1]
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Distance moved (m)",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(behav$of_distance~behav$group,col=colb,at=c(1:4),add=T,
+        border=cola,axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+beeswarm(behav$of_distance~behav$group,col=colc,at=c(1:4),add=T,pwpch=(16.5+behav$sex_num) )
+
+tp<-(groupquant[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant[1,xx],groupquant[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>4){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=20),
+     labels=c(rep("",length(seq(range[1],range[2],by=20)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=20),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:4),c(rep(range[1]-0.046*scal,4)),xpd=T,cex=1.1,col=cola,
+     c("Wt","Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola,
+     c("0","edv", "0", "edv"))
+
+ypos<-17;xpos=1.4
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2,0,0,0))
+dif<-data.frame(post_fix$wt_contrast,post_fix$b_groupeda.sca,
+                post_fix$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Fold-difference in distance moved"
+tckk=-0.018
+ste<-seq(0.2,2.2,by=0.2)
+mons_poste(dif,1)
+
+zpos=seq(0,1,1/3)
+xx=1;ind=0.3;xpol<-2
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+```
+
+# Thigmotaxis in open filed per distance
+
+## Data exploration
+
+```{r, fig.height=8, fig.width=4}
+
+## set spacing
+par(mar=c(5,3.5,1,1))
+par(mgp=c(1.9,0.7,0))
+par(mfrow=c(3,1))
+
+## plotting
+plot(behav$thigmo_propdist ~ behav$group,las=2,xlab="",
+     col=cola) 
+
+plot(behav$thigmo_propdist ~ behav$group_sex,las=2,xlab="",
+     col=cola[c(1,1,2,2,3,3,4,4)]) 
+
+hist(behav$thigmo_propdist, 20)
+```
+
+No apparent effect of sex. Distribution looks relatively similar across the groups and symmetrical. We will fit both beta regression (the outcome is proportion from 0 to 1) or Gaussian models
+
+## Modelling
+
+### Prior specification
+
+As the study Tichanek et al. used different size of the zone along the walls (5 vs. 7 cm), prior for intercept will be established according to data only
+
+Beta model
+
+```{r}
+behav$group<-relevel(behav$group,ref='ctrl.sca')
+
+logit(mean(behav$thigmo_propdist))
+
+sd(logit(behav[behav$genotype=="sca",]$thigmo_propdist))*c(5, 1.2)
+sd(logit(behav$thigmo_propdist))*c(5, 1.2)
+
+model_pri<-glmmTMB(of.distance_on_edges_narrow~genotype,
+                   family=beta_family(link="logit"),data=young_scirep)
+summary(model_pri)
+prios(model_pri)
+```
+
+Defining prior for beta model
+
+```{r}
+prior01 <- c(set_prior("student_t(3, 0.71, 2)", class = "b", coef = "Intercept"),
+             set_prior("normal(-0.28, 0.42)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(-0.28, 0.42)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"))
+```
+
+Priors for Gaussian model
+
+```{r}
+mean(behav$thigmo_propdist)
+sd((behav[behav$genotype=="sca",]$thigmo_propdist))*c(5, 1.2)
+sd((behav$thigmo_propdist))*c(5, 1.2)
+
+model_pri<-glmmTMB(of.distance_on_edges_narrow~genotype,data=young_scirep)
+summary(model_pri)
+prios(model_pri)
+```
+
+Defining the prior for Gaussian model
+
+```{r}
+prior02 <- c(set_prior("student_t(3,0.67,0.41)", class = "b", coef = "Intercept"),
+             set_prior("normal(-0.052,0.08)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(-0.052,0.08)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,0.1)"  , class = "b", coef = "groupeda.sca"))
+```
+
+### Fitting models and convergence and ESS check
+
+```{r}
+of_thigmo_model_01 <- run_model(
+            brm(thigmo_propdist ~0+Intercept+group,
+                      data=behav, prior = prior01,
+                      family=Beta(link="logit", link_phi="log"),
+                      save_pars = save_pars(all = TRUE),
+                      iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                      control = list(adapt_delta = 0.99)),
+                  'output/brm/of_thigmo_model_01', reuse = TRUE)  
+            
+
+
+of_thigmo_model_02 <- run_model(
+              brm(thigmo_propdist~0+Intercept+group,
+                      data=behav, prior = prior02,
+                      family=gaussian(),
+                      save_pars = save_pars(all = TRUE),
+                      iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                      control = list(adapt_delta = 0.99)),
+                  'output/brm/of_thigmo_model_02', reuse = TRUE)  
+
+mcmc_trace(of_thigmo_model_01)
+mcmc_trace(of_thigmo_model_02)
+  
+summary(of_thigmo_model_01)
+summary(of_thigmo_model_02)
+
+```
+
+Convergence and ESS of both models are OK
+
+### PPC
+
+```{r, fig.height=6, fig.width=5}
+pla<-pp_check(of_thigmo_model_01,type='dens_overlay',ndraws = 50)
+plb<-pp_check(of_thigmo_model_02,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_thigmo_model_01,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(of_thigmo_model_02,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_thigmo_model_01,type='scatter_avg') 
+plb<-pp_check(of_thigmo_model_02,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_thigmo_model_01,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(of_thigmo_model_02,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(of_thigmo_model_01,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(of_thigmo_model_02,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+### Are there too influential observations?
+par(mfrow=c(1,2))
+plot(loo(of_thigmo_model_01));loo(of_thigmo_model_01)
+plot(loo(of_thigmo_model_02));loo(of_thigmo_model_02)
+```
+
+Both models seem OK. Beta model is more natural for proportional data and thus will be preferred
+
+## Posterior draws extraction and visualization
+
+Posterior samples extraction
+
+```{r}
+post_fix<-as.data.frame(of_thigmo_model_01, variable = c("b_Intercept","b_groupctrl.wt",
+                                                       "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix)[1]<-"sca_ctrl"
+
+post_fix$wt_ctrl<-post_fix$sca_ctrl+post_fix$b_groupctrl.wt
+post_fix$wt_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.wt
+post_fix$sca_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.sca
+post_fix$wt_contrast<-post_fix$wt_eda-post_fix$wt_ctrl
+
+groupquant<-sapply(post_fix[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant<-inv.logit(groupquant)
+```
+
+Plotting
+
+```{r, fig.height=4.11, fig.width=7.5}
+
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+range<-c(0,1);scal<-range[2]-range[1]
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Thigmotaxis (proportion per distance)",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+0.1;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(behav$thigmo_propdist~behav$group,col=colb,at=c(1:4),add=T,
+        border=cola,axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+beeswarm(behav$thigmo_propdist~behav$group,col=colc,at=c(1:4),add=T,pwpch=(16.5+behav$sex_num) )
+
+tp<-(groupquant[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant[1,xx],groupquant[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>4){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),
+     labels=c(rep("",length(seq(range[1],range[2],by=0.2)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:4),c(rep(range[1]-0.046*scal,4)),xpd=T,cex=1.1,col=cola,
+     c("Wt","Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola,
+     c("0","edv", "0", "edv"))
+
+ypos<-0.2;xpos=1.4
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2,0,0,0))
+dif<-data.frame(post_fix$wt_contrast,post_fix$b_groupeda.sca,
+                post_fix$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Odds ratio for thigmotaxic distance"
+tckk=-0.018
+ste<-seq(0.2,2.2,by=0.2)
+mons_poste(dif,1)
+
+zpos=seq(0,1,1/3)
+xx=1;ind=0.3;xpol<-1.77
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+```
+
+# Thigmotaxis in OF per time
+
+## Data exploration
+
+```{r, fig.height=8, fig.width=4}
+
+## set spacing
+par(mar=c(5,3.5,1,1))
+par(mgp=c(1.9,0.7,0))
+par(mfrow=c(3,1))
+
+## plotting
+plot(behav$thigmo_proptime ~ behav$group,las=2,xlab="",
+     col=cola) 
+
+plot(behav$thigmo_proptime ~ behav$group_sex,las=2,xlab="",
+     col=cola[c(1,1,2,2,3,3,4,4)]) 
+
+hist(behav$thigmo_proptime, 20)
+```
+No apparent effect of sex. Data distribution has tail around the 0.5 value, expectable for data of proportion concentrated close to 0-1 bound. Thus, beta regression is indicated.
+
+## Modelling
+
+### Prior specification
+
+In the study Tichanek et al., time thigmotaxis was not main outcome and was confounded with distance walked. The previous data will not be used for prior
+
+```{r}
+behav$group<-relevel(behav$group,ref='ctrl.sca')
+
+logit(mean(behav$thigmo_proptime))
+sd(logit(behav$thigmo_proptime))*5
+```
+
+Setting prior
+
+```{r}
+
+prior01 <- c(set_prior("student_t(3,1.13, 2.89)", class = "b", coef = "Intercept"),
+             set_prior("normal(0, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 2)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"))
+```
+
+### Model fit and diagnostics
+```{r}
+of_thigmo_time_model_01<-run_model(
+              brm(thigmo_proptime ~0+Intercept+group,
+                        data=behav, prior = prior01,
+                        family=Beta(link="logit", link_phi="log"),
+                        save_pars = save_pars(all = TRUE),
+                        iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                        control = list(adapt_delta = 0.99)),
+                  'output/brm/of_thigmo_time_model_01', reuse = TRUE)  
+              
+
+mcmc_trace(of_thigmo_time_model_01)
+summary(of_thigmo_time_model_01)
+```
+Model converged and ESS are sufficient
+
+### PPC
+```{r}
+pp_check(of_thigmo_time_model_01,type='dens_overlay',ndraws = 50)
+pp_check(of_thigmo_time_model_01,type='dens_overlay_grouped',ndraws = 50,group='group') 
+pp_check(of_thigmo_time_model_01,type='scatter_avg') 
+pp_check(of_thigmo_time_model_01,type="stat_2d", stat = c("max", "min"),ndraws=200)
+pp_check(of_thigmo_time_model_01,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+```
+Model predicts the data well
+
+
+## Posterior draws extraction and vizualisation
+
+Posterior extraction
+```{r}
+post_fix<-as.data.frame(of_thigmo_time_model_01, variable = c("b_Intercept","b_groupctrl.wt",
+                                                         "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix)[1]<-"sca_ctrl"
+
+post_fix$wt_ctrl<-post_fix$sca_ctrl+post_fix$b_groupctrl.wt
+post_fix$wt_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.wt
+post_fix$sca_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.sca
+post_fix$wt_contrast<-post_fix$wt_eda-post_fix$wt_ctrl
+summary(post_fix)
+
+groupquant<-sapply(post_fix[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant<-inv.logit(groupquant)
+```
+
+
+Vizualisation
+```{r, fig.height=4.11, fig.width=7.5}
+## ordering of groups
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+## plot spacing
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+
+## scales setting
+range<-c(0,1);scal<-range[2]-range[1]
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+
+## plottting
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Thigmotaxis (proportion per time)",las=1, axes=FALSE,cex.lab=1)
+
+## theming
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+0.1;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+
+## data distribution across groups and showing datapoints
+vioplot(behav$thigmo_proptime~behav$group,col=colb,at=c(1:4),add=T,
+        border=cola,axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+beeswarm(behav$thigmo_proptime~behav$group,col=colc,at=c(1:4),add=T,pwpch=(16.5+behav$sex_num) )
+
+## group-specific prediction and CI
+tp<-(groupquant[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant[1,xx],groupquant[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>4){break}}
+
+## axes
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),
+     labels=c(rep("",length(seq(range[1],range[2],by=0.2)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.2),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+
+## labelling
+text(c(1:4),c(rep(range[1]-0.046*scal,4)),xpd=T,cex=1.1,col=cola,
+     c("Wt","Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola,
+     c("0","edv", "0", "edv"))
+
+ypos<-0.2;xpos=1.4
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+## probability distributions
+par(mar=c(2,0,0,0))
+dif<-data.frame(post_fix$wt_contrast,post_fix$b_groupeda.sca,
+                post_fix$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Odds ratio for thigmotaxic time"
+tckk=-0.018
+ste<-seq(0.2,4,by=0.4)
+mons_poste(dif,1)
+
+zpos=seq(0,1,1/3)
+xx=1;ind=0.3;xpol<-2.2
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+```
+
+
+
