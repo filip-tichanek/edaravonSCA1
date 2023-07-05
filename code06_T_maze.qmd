@@ -1,0 +1,532 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "Cognitive functions in water T-maze"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: false
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+# Upload of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+library(bayesplot)
+library(gtsummary)
+library(vegan)
+library(knitr)  
+library(ggplot2)  
+  } ) )
+```
+
+# Data upload and wrangling
+
+```{r}
+load("source_data/myEnvironment.RData")
+
+## obtining number of correct turns (from 4 trials) as outcome of T-maze
+behav[,which(grepl("t_session", colnames(behav)))] <- (behav[,which(grepl("t_session", colnames(behav)))]/100)*4
+
+## defining mean succees per T-maze session
+behav$tmaze_tot <- rowMeans(behav[
+  ,which(grepl("t_session", colnames(behav)))])
+  
+## getting numbers of correct turns per 3 sessions
+behav <- behav %>% mutate(
+  t_q1 = t_session1 + t_session2 + t_session3,
+  t_q2 = t_session4 + t_session5 + t_session6,
+  t_q3 = t_session7 + t_session8 + t_session9,
+  t_q4 = t_session10 + t_session11 + t_session12,
+  t_ntrials = 12,
+  
+## getting #success turns in the last 2 sessions
+  t_last2 = t_session11 + t_session12) %>% mutate(
+
+## numbers of success in 1 half (learning phase)        
+  t_a = t_q1 + t_q2,
+
+## numbers of success in the 2nd phase (flexibility)
+  t_b = t_q3 + t_q4,
+
+## number of success in training sessions
+  t_aq = t_q1 + t_q3,
+
+## number of success in training sessions (definition #2)
+  t_test = t_q2 + t_q4,
+  t_test2 = t_q2 + t_last2)
+
+## long format
+t_data <- behav[,which(grepl("t_session", colnames(behav)))]
+t_data <- data.frame(t_data, id = as.factor(behav$id), group = behav$group, sex = behav$sex)
+dat_long <- gather(t_data, key = "session", value = "value",
+                   starts_with("t_session"), na.rm = TRUE)
+dat_long <- separate(dat_long, session, c("prefix", "session"), sep = "t_session")
+dat_long$correct <- dat_long$value/4
+dat_long$corr_perc <- dat_long$correct * 100
+dat_long$session <- as.numeric(dat_long$session)
+
+## subseting learning (1st half of experiment) and flexibility (reversal) parts
+dat_long_learn <- subset(dat_long, session < 7)
+dat_long_flex <- subset(dat_long, session > 6)
+
+summary(dat_long)
+```
+
+# Data exploration
+
+! In following plots, blue vertical line imply the change of the position of hidden platform. Thus, from that point, animals must forget already known and flexibly re-learn to another position (implying cognitive flexibility)
+
+## Mean success (%) across groups and sexes
+```{r, fig.height=6, fig.width=7}
+dat_long %>% 
+  ggplot(aes(
+    x=session, y=corr_perc, by=id, col=sex, group=interaction(group, sex)
+    )) + 
+  geom_vline(xintercept = 6.5, 
+                color = "blue", linewidth=0.8, linetype= 'dashed') +
+  stat_summary(fun = "mean", geom = "line", alpha = 0.8, size = 1) + 
+  facet_wrap(~group)+
+  scale_x_continuous(breaks = seq(2, max(dat_long$session), by = 2))
+
+```
+There is no consistent effect of sex. Sex will be ignored
+
+
+## Average values over groups
+```{r, fig.height=4, fig.width=7}
+dat_long %>% 
+  ggplot(aes(
+    x=session, y=corr_perc, by=id, group=group, col=group
+    )) + 
+  geom_vline(xintercept = 6.5, 
+                color = "blue", linewidth=0.8, linetype= 'dashed') +
+  stat_summary(fun = "mean", geom = "line", alpha = 0.6, size = 0.8)+
+  stat_summary(fun = "mean", geom = "point", alpha = 0.6, size = 2)+
+  scale_x_continuous(breaks = seq(2, max(dat_long$session), by = 2))
+```
+You can see that genotype clearly matters. As expected, SCA1 mice show worse learning. This lead to paradoxical situation: when the position of the platform change (requiring forgetting the previously acquired information) WT mice show worse result due to SCA1 mice did not learn well (less need to forget). You can see that 4 another sessions are needed for WT mice to re-learn and show again better results compared to SCA1 mice. 
+
+This complicates the analysis and interpretation of the second half of the experiment. To address this, we will do following:
+
+- (i) although we originally divided sessions to 'acquisition' vs. 'testing' in the way that half of each phase (learning vs. flexibility) were 'acquisition' (sessions 1-3 and 7-9) and second halves were 'testing' (4-6 and 10-12), we will modify the definition of testing and only last two sessions of the 'flexibility' phase will be considered as 'testing'.
+Thus,
+  - 'acquisition': sessions 1-3 and 7-10
+  - 'testing': sessions 4-6 and 11-12
+  
+- (ii) as there still may be effect of site preference or absence of learning in the first phase, flexibility (proportion of correct turns in the sessions 11-12) will be modelled via two models, where the 2nd will include success in the 7th session as a covariate
+
+# Modelling
+We will construct 4 models
+
+- (i) across testing sessions of learning phase, sessions 4-6 (*initial learning*)
+- (ii) across testing sessions of flexibility phase, sessions 11-12 (*flexibility*)
+- (iii) across testing sessions of flexibility phase, sessions 11-12, but with the covariate of success on 7th session 
+
+Only one model of flexibility (models #2 or #3) will be visualized, depending on the effect of the covariate in the model #4 
+
+- (iv) model of successive turns across all testing sessions (4-6 and 11-12, *all testing sessions*)
+
+As we have presumably overdispersed binomial data, we will use beta-binomial likelihood 
+
+## Defining function for beta-binomial distribution
+```{r}
+beta_binomial2 <- custom_family(
+  "beta_binomial2", dpars = c("mu", "phi"),
+  links = c("logit", "log"), lb = c(NA, 2),
+  type = "int", vars = "vint1[n]")
+
+stan_funs <- "
+real beta_binomial2_lpmf(int y, real mu, real phi, int T) {
+    return beta_binomial_lpmf(y | T, mu * phi, (1 - mu) * phi);
+  }
+  int beta_binomial2_rng(real mu, real phi, int T) {
+    return beta_binomial_rng(T, mu * phi, (1 - mu) * phi);
+  }
+"
+stanvars <- stanvar(scode = stan_funs, block = "functions")
+```
+
+## Setting priors
+```{r}
+behav$group<-relevel(behav$group,ref='ctrl.sca')
+
+logit(mean(behav$t_q2/12))
+logit(mean(behav$t_q4/12))
+logit(mean(behav$t_test/24))
+
+## initial learning model
+prior1 <- c(set_prior("student_t(3, 1.1, 5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0,2)", class = "b", coef = "groupctrl.wt"),
+            set_prior("normal(0,2)", class = "b", coef = "groupeda.wt"),
+            set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"))
+
+## flexibility models
+prior2 <- c(set_prior("student_t(3, 0.15, 5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0,2)", class = "b", coef = "groupctrl.wt"),
+            set_prior("normal(0,2)", class = "b", coef = "groupeda.wt"),
+            set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"))
+
+
+prior3 <- c(set_prior("student_t(3, 0.15, 5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0,2)", class = "b", coef = "groupctrl.wt"),
+            set_prior("normal(0,2)", class = "b", coef = "groupeda.wt"),
+            set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"),
+            set_prior("normal(0.5,1)", class = "b", coef = "t_session7"))
+
+## all testing sessions model
+prior4 <- c(set_prior("student_t(3, 0.6, 5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0,2)", class = "b", coef = "groupctrl.wt"),
+            set_prior("normal(0,2)", class = "b", coef = "groupeda.wt"),
+            set_prior("normal(0,1.2)"  , class = "b", coef = "groupeda.sca"))
+
+```
+
+## Fitting the models and convergence and ESS check
+```{r}
+
+## initial learning
+t_model1 <- run_model( 
+          brm(t_q2|vint(12) ~ 0 + Intercept + group,
+                 data = behav, 
+                 stanvars = stanvars,
+                 prior= prior1,
+                 family=beta_binomial2,
+                 save_pars = save_pars(all = TRUE),
+                 iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                 control = list(adapt_delta = 0.99)),
+                 'output/brm/t_model1', reuse = TRUE)
+
+## flexibility, unadjusted
+t_model2 <- run_model(
+          brm(t_last2|vint(8) ~ 0 + Intercept + group,
+                 data = behav, 
+                 stanvars = stanvars,
+                 prior= prior2,
+                 family=beta_binomial2,
+                 save_pars = save_pars(all = TRUE),
+                 iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                 control = list(adapt_delta = 0.99)),
+                 'output/brm/t_model2', reuse = TRUE)
+
+## flexibility, adjusted
+t_model3 <- run_model(
+          brm(t_last2|vint(8) ~ 0 + t_session7 + Intercept + group,
+                 data = behav, 
+                 stanvars = stanvars,
+                 prior= prior3,
+                 family=beta_binomial2,
+                 save_pars = save_pars(all = TRUE),
+                 iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                 control = list(adapt_delta = 0.99)),
+                 'output/brm/t_model3', reuse = TRUE)
+
+## all testing sessions
+t_model4 <- run_model(
+          brm(t_test2|vint(20) ~ 0 +  Intercept + group,
+                 data = behav, 
+                 stanvars = stanvars,
+                 prior= prior4,
+                 family=beta_binomial2,
+                 save_pars = save_pars(all = TRUE),
+                 iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+                 control = list(adapt_delta = 0.99)),
+                 'output/brm/t_model4', reuse = TRUE)
+
+
+summary(t_model1)
+summary(t_model2)
+summary(t_model3)
+summary(t_model4)
+```
+Model converged well (RHat values = 1), ESSs are sufficient (>2000).
+
+Inclusion of the success on the session #7 to the flexibility model led to narrowing of credible intervals and the covariate had clearly non-zero effect. Model #3 will be preferred over model #2
+
+Given binomial outcome and beta-binomial likelihood distribution, PPC will not be provided (there is available function for this and there is less need for PPC in binomial data) 
+
+## Extraction of posterior draws
+```{r}
+
+## learning
+post_fix_learn <- as.data.frame(t_model1, variable = c("b_Intercept","b_groupctrl.wt",
+                                             "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix_learn)[1]<-"sca_ctrl"
+
+post_fix_learn$wt_ctrl<-post_fix_learn$sca_ctrl+post_fix_learn$b_groupctrl.wt
+post_fix_learn$wt_eda<-post_fix_learn$sca_ctrl+post_fix_learn$b_groupeda.wt
+post_fix_learn$sca_eda<-post_fix_learn$sca_ctrl+post_fix_learn$b_groupeda.sca
+post_fix_learn$wt_contrast<-post_fix_learn$wt_eda-post_fix_learn$wt_ctrl
+
+
+
+post_fix_flex <- as.data.frame(t_model3, variable = c("b_Intercept","b_groupctrl.wt",
+                                                        "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix_flex)[1]<-"sca_ctrl"
+
+post_fix_flex$wt_ctrl<-post_fix_flex$sca_ctrl+post_fix_flex$b_groupctrl.wt
+post_fix_flex$wt_eda<-post_fix_flex$sca_ctrl+post_fix_flex$b_groupeda.wt
+post_fix_flex$sca_eda<-post_fix_flex$sca_ctrl+post_fix_flex$b_groupeda.sca
+post_fix_flex$wt_contrast<-post_fix_flex$wt_eda-post_fix_flex$wt_ctrl
+
+
+post_fix_tot <- as.data.frame(t_model4, variable = c("b_Intercept","b_groupctrl.wt",
+                                                       "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix_tot)[1]<-"sca_ctrl"
+
+post_fix_tot$wt_ctrl<-post_fix_tot$sca_ctrl+post_fix_tot$b_groupctrl.wt
+post_fix_tot$wt_eda<-post_fix_tot$sca_ctrl+post_fix_tot$b_groupeda.wt
+post_fix_tot$sca_eda<-post_fix_tot$sca_ctrl+post_fix_tot$b_groupeda.sca
+post_fix_tot$wt_contrast<-post_fix_tot$wt_eda-post_fix_tot$wt_ctrl
+
+
+groupquant<-sapply(post_fix_tot[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant <- inv.logit(groupquant)
+
+```
+
+
+# Visualization
+
+## Showing data
+```{r, fig.width=9.1, fig.height=4.2}
+dat_long$group <- factor(dat_long$group,levels = c('ctrl.wt','eda.wt','ctrl.sca','eda.sca') )
+
+m= matrix(c(1,2), nrow = 1, ncol=2, byrow = TRUE)
+layout(mat = m, heights = c(1),
+       widths = c(0.75, 0.4))
+
+par(mar=c(2,2,1.5,0))
+par(mgp=c(1,0.6,0))
+range<-c(0, 100);scal<-range[2]-range[1]
+xrange<-c(0.5,12.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Correct turns (%)",las=1, axes=FALSE,cex.lab=1.2)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+
+rect(3.5,range[2],6.5,range[1],col = rgb(0.84,0.84,1),border=NA)
+rect(10.5,range[2],12.5,range[1],col = rgb(0.84,0.84,1),border=NA)
+
+
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>12){break}}
+
+
+tap_dat <- tapply(dat_long$corr_perc, list(
+  dat_long$session, dat_long$group), mean)
+
+
+xl <- c(1:6)
+for (x in 1:4){
+  lines(tap_dat[1:6,x] ~xl ,col=cola[x], lwd = 1.9, type = 'o', pch= 16)
+}
+
+xl <- c(7:12)
+for (x in 1:4){
+  lines(tap_dat[7:12,x] ~xl ,col=cola[x], lwd = 1.9, type = 'o', pch= 16)
+}
+
+
+tckk=-0.02
+
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),pos=xrange[1]
+     ,tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1, at=c(1:12),,pos=range[1],tck=tckk)
+lines(c(0.5,12.5), c(0,0))
+
+text(6, range[1]-0.117*scal, 'Session', xpd= TRUE, cex=1.2)
+
+
+
+x = 1  
+y = 27; yde <- 7
+lines(c(1.1,1.7),c(y,y), col = cola[x], pch = 16, lwd = 1.9)
+text(2.7, y, 'WT 0', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+lines(c(1.1,1.7),c(y,y), col = cola[x], pch = 16, lwd = 1.9)
+text(2.7, y, 'WT edv', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+lines(c(1.1,1.7),c(y,y), col = cola[x], pch = 16, lwd = 1.9)
+text(2.7, y, 'SCA1 0', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+lines(c(1.1,1.7),c(y,y), col = cola[x], pch = 16, lwd = 1.9)
+text(2.7, y, 'SCA1 edv', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+rect(1,30,3.74,1.8, col=NULL, border = "grey50")
+
+text(c(2,5,8.5,11.5),c(rep(95,4)),
+     c("Aquisition","Testing","Aquisition", "Testing"),font = 3)
+
+text(c(3.5,9.5),c(rep(107,2)),c("Initial learning","Reversal"),
+     font = 3, cex = 1.3, xpd=TRUE)
+
+lines(c(0.8,6.2),c(102,102),lty=2)
+lines(c(6.8,12.2),c(102,102),lty=2)
+
+### 2nd plot -----------
+par(mgp=c(0.7,0.6,0))
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Correct turns (%) - testing only",las=1, axes=FALSE,cex.lab=1.1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(100*(behav$t_test2/20) ~ behav$group,col=colb,at=c(1:4),add=T,
+        border=cola,axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+beeswarm(100*(behav$t_test2/20) ~ behav$group,
+         col=colc,at=c(1:4),add=T,pwpch=(16.5+behav$sex_num) )
+
+groupquant <- groupquant*100
+tp<-(groupquant[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant[1,xx],groupquant[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>4){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),
+     labels=c(rep("",length(seq(range[1],range[2],by=10)))),
+     pos=xrange[1],tck=tckk)
+
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:4),c(rep(range[1]-0.046*scal,4)),xpd=T,cex=1.1,col=cola,
+     c("Wt","Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola,
+     c("0","edv", "0", "edv"))
+
+ypos<-15;xpos=1.4
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+```
+
+## Posterior distributions for the effect - log [Odds Ratio]
+```{r, fig.width=6.3, fig.height=3.5}
+
+m= matrix(c(1,2,3,
+            4,5,6), nrow = 2, ncol=3, byrow = TRUE)
+layout(mat = m, heights = c(0.07, 0.93),
+       widths = c(1/3, 1/3, 1/3))
+
+par(mar=c(0,0,0,0))
+par(mgp=c(0,0.0,0))
+
+plot(NULL, xlim=c(-1,1), ylim=c(-1,1), axes=F)
+text(0.2,-0.20,"all testing sessions", cex = 1.2, font = 3,xpd=TRUE)
+
+
+plot(NULL, xlim=c(-1,1), ylim=c(-1,1), axes = F)
+text(0.2,-0.2,"initial learning", cex = 1.2, font = 3,xpd=TRUE)
+
+plot(NULL, xlim=c(-1,1), ylim=c(-1,1), axes = F)
+text(0.2,-0.2,"reversal", cex = 1.2, font = 3,xpd=TRUE)
+
+
+par(mar=c(3,3,0,0))
+par(mgp=c(2,0.6,0))
+
+dif<-data.frame(post_fix_tot$wt_contrast,post_fix_tot$b_groupeda.sca,
+                post_fix_tot$b_groupctrl.wt)
+dif<- (dif)
+
+yla<-"Log-odds for correct turn"
+tckk=-0.018
+ste<-seq(-1,2,by=0.5)
+mons_poste(dif, 0)
+
+zpos=seq(0,1,1/3)
+xx=1;ind=0.4;xpol<- -1.1
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1,xpd=TRUE)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1,xpd=TRUE)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1,xpd=TRUE)
+
+
+dif<-data.frame(post_fix_learn$wt_contrast,post_fix_learn$b_groupeda.sca,
+                post_fix_learn$b_groupctrl.wt)
+dif<- (dif)
+
+yla<-"Log-odds for correct turn"
+tckk=-0.018
+ste<-seq(-1,2,by=0.5)
+mons_poste(dif, 0)
+
+
+dif<-data.frame(post_fix_flex$wt_contrast,post_fix_flex$b_groupeda.sca,
+                post_fix_flex$b_groupctrl.wt)
+dif<- (dif)
+
+yla<-"Log-odds for correct turn"
+tckk=-0.018
+ste<-seq(-1,2,by=0.5)
+mons_poste(dif, 0)
+```
