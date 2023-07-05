@@ -1,0 +1,591 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "Analysis of motor deficit on rotarod"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: false
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+# Upload of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+library(bayesplot)
+library(gtsummary)
+library(vegan)
+library(knitr)  
+library(ggplot2)  
+  } ) )
+```
+
+# Data upload and wrangling
+
+```{r}
+load("source_data/myEnvironment.RData")
+
+## defining new variables
+rotarod$group <- interaction(rotarod$treatment, rotarod$genotype)
+rotarod$group <- factor(rotarod$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+rotarod$sex_num <- ifelse(rotarod$sex == "f", -0.5, 0.5)
+
+rotarod$group_sex <- interaction(rotarod$treatment, rotarod$genotype, rotarod$sex)
+rotarod$group_sex <- factor(rotarod$group_sex, levels=c('ctrl.wt.f','ctrl.wt.m',
+                                                  'eda.wt.f','eda.wt.m',
+                                                  'ctrl.sca.f','ctrl.sca.m',
+                                                  'eda.sca.f','eda.sca.m'))
+
+## subject as factor
+rotarod$id <- as.factor(rotarod$id)
+
+
+## order of all roatrod tests
+rotarod$order <- (rotarod$day-1) * 4 + rotarod$session
+rotarod$order2 <- ifelse(rotarod$pre_post == 'pre', rotarod$order, rotarod$order+12)
+
+## data summary
+summary(rotarod)
+```
+
+Sub-setting pre-treatment and post-treatment rotarod data and data aggregation.
+
+We will create 3 aggregated datasets, each with different pre-treatment rotarod latency (*preTreat RotLat*) variable. The reason is that our previous observations suggested that the genotype-related difference is less pronounced for the first 1-2 rotarod session(s) and do not predict later rotarod well. Models will be fitted using all three datasets and the model with the best predictive accuracy (as estimated via *leave-one-out cross-validation* - LOO-CV) will be used
+
+```{r}
+
+## subseting post-treatment dataset
+rot_post <- subset(rotarod, rotarod$pre_post == 'post')
+
+## pre-treatment rotarod
+rot_pre3 <- subset(rotarod, rotarod$pre_post == 'pre'& rotarod$day >2)
+rot_pre23 <- subset(rotarod,rotarod$pre_post == 'pre'& rotarod$day >1)
+rot_pre <- subset(rotarod, rotarod$pre_post == 'pre')
+
+## aggregated data sets. Each has different definition of pre-treatment rotarod:
+
+### mean from all pre-treatment rotarod runs
+rot_pre_agg <- rot_pre %>% 
+  group_by(id) %>% 
+  summarise(mean_lat = mean(rot_latency))
+
+### mean from 2nd and 3rd day 
+rot_pre_agg_23 <- rot_pre23 %>% 
+  group_by(id) %>% 
+  summarise(mean_lat = mean(rot_latency))
+
+### mean from 3rd rotarod day only
+rot_pre_agg_3 <- rot_pre3 %>% 
+  group_by(id) %>% 
+  summarise(mean_lat = mean(rot_latency))
+
+## joining new variable to post-treatment rotarod data
+rot_post_co <- rot_post %>% 
+  left_join(rot_pre_agg, by ='id') %>% 
+  left_join(rot_pre_agg_23, by ='id') %>%
+  left_join(rot_pre_agg_3, by ='id')
+ 
+## centering the variables 'day' and 'session'
+rot_post_co$day_cen <- rot_post_co$day-2
+rot_post_co$session_cen <- rot_post_co$session -2.5
+
+summary(rot_post_co)
+```
+
+New variables *mean_lat.x*, *mean_lat.y*, *mean_lat* indicate pre-treatment rotarod latency (***preTreat RotLat***) used as covariate in models to adjuste for baseline performance
+
+-   
+
+    (i) *mean_lat.x*: average latency from all pre-treatment measurements
+
+-   
+
+    (ii) *mean_lat.y*: latency averaged from the days 2 and 3
+
+-   
+
+    (iii) *mean_lat* latency averaged from the 3rd day
+
+# Data exploration
+
+Figure showing individual trajectories or rotarod (all 24 sessions, blue vertical line shows transition from *pre-treatment* to *post-treatment*)
+
+```{r, fig.height=7, fig.width=7}
+rotarod %>% ggplot(aes(x=order2, y=rot_latency, by=id, col=sex)) + 
+  geom_line(alpha=0.8) + 
+  geom_vline(xintercept = 12.5, 
+                color = "blue", linewidth=0.8, linetype= 'dashed') +
+  facet_wrap(~group) 
+
+
+
+```
+
+Sex does not exhibit consistent effect, or only minor specifically in WT group. We will ignore the *sex* throughout the analysis
+
+Figure showing data distribution per group
+
+```{r, fig.height=7, fig.width=6}
+par(mfrow=c(2,2))
+hist(rotarod[which(rotarod$group == 'ctrl.wt'),c('rot_latency')], 20, main="WT_0", xlim=c(0,300))
+hist(rotarod[which(rotarod$group == 'eda.wt'),c('rot_latency')], 20, main="WT_E", xlim=c(0,300))
+hist(rotarod[which(rotarod$group == 'ctrl.sca'),c('rot_latency')], 20,
+     main="SCA_0", xlim=c(0,300))
+hist(rotarod[which(rotarod$group == 'eda.sca'),c('rot_latency')], 20, main="SCA_E", xlim=c(0,300))
+
+```
+
+Distributions seem more or less symmetric. I do not see marks of [heteroscedasticity](https://en.wikipedia.org/wiki/Homoscedasticity_and_heteroscedasticity) (width of distribution seems similar across groups, similar magnitude of changes in low- and high-performing individuals on the previous plot of individual trajectories).
+
+# Modelling
+
+As rotarod latency in non-negative, and right tail-distribution is expected, gamma likelihood may be the first choice. On the other hand, the values of latency is restricted as the rotarod increases the speed; the latency is thus strongly restricted, resulting in normal-like distribution.
+
+Also data exploration suggest that Gaussian likelihood distribution may be reasonable choice here. We will fit both and look on *posterior predictive check* (PPC) to choose between them.
+
+Firstly, we will select likelihood used, with models including pre-treatment roator latency averaged over all pre-treatment rotarod measurements (*mean_lat.x*).
+
+## Prior specification
+
+First, we look at data summary statistics and estimate from previous publication [Tichanek et al.](https://www.nature.com/articles/s41598-020-62308-0)
+
+```{r}
+
+## changing reference group
+rot_post_co$group<-relevel(rot_post_co$group,ref='ctrl.sca')
+
+## wrangling data from Tichanek et al.
+young_scirep <- young_scirep %>% mutate(
+  rotarod_latency = mean(grepl('rotarod', young_scirep)))
+
+young_scirep$rot_lat <- rowMeans(young_scirep[
+  ,which(grepl("rotarod", colnames(young_scirep)))])
+
+## prior for genotype effect, using Gaussian likelihood
+mprio_norm <- glmmTMB(rot_lat~genotype, data = young_scirep)
+summary(mprio_norm)
+prios(mprio_norm)
+
+## prior for genotype effect with Gamma likelihood
+mprio_norm <- glmmTMB(rot_lat~genotype, data = young_scirep,family=Gamma(link="log"))
+summary(mprio_norm)
+prios(mprio_norm)
+
+## summary statistics
+mean(rot_post_co$rot_latency)
+mean(rot_post_co[rot_post_co$genotype == 'sca', c('rot_latency')])
+
+sd(rot_post_co$rot_latency) *c(5, 2, 1.2)
+sd(rot_post_co[rot_post_co$genotype == 'sca', c('rot_latency')])*c(5, 2, 1.2)
+
+mean(log(rot_post_co$rot_latency))
+mean(log(rot_post_co[rot_post_co$genotype == 'sca', c('rot_latency')]))
+
+sd(log(rot_post_co$rot_latency))*c(5)
+```
+
+## Setting priors, preTreat RotLat: all days
+
+```{r}
+## priors for Gaussian model
+prior01 <- c(set_prior("student_t(3, 127, 229)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,92)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0,92)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,46)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(10,20)", class = "b", coef = "day_cen"),
+             set_prior("normal(0,20)", class = "b", coef = "session_cen"),
+             set_prior("normal(0,2)", class = "b", coef = "session_cen:day_cen"),
+             set_prior("normal(0.5,2)", class = "b", coef = "mean_lat.x"))
+
+## prior for Gamma (log-linked) model
+prior02 <- c(set_prior("student_t(3, 4.8, 2.1)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0,2)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,1.2)", class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0.2,0.5)", class = "b", coef = "day_cen"),
+             set_prior("normal(0,0.5)", class = "b", coef = "session_cen"),
+             set_prior("normal(0,0.2)", class = "b", coef = "session_cen:day_cen"),
+             set_prior("normal(0.5,1)", class = "b", coef = "mean_lat.x"))
+```
+
+## Fitting and diagnsotics, preTreat RotLat: all days
+
+```{r, fig.height=8, fig.width=8}
+
+## fitting gaussian model
+model1 <- run_model(
+          brm(rot_latency ~ 0 + Intercept + mean_lat.x + session_cen + 
+                day_cen + session_cen:day_cen + group + (1|id),
+              family=gaussian(),
+              data = rot_post_co, 
+              prior= prior01,
+              save_pars = save_pars(all = TRUE),
+              iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+              control = list(adapt_delta = 0.99, max_treedepth = 15)),
+              'output/brm/model1', reuse = TRUE)
+
+### fitting gamma model
+model2 <- run_model(
+          brm(rot_latency ~ 0 + Intercept + mean_lat.x + session_cen + 
+                day_cen + session_cen:day_cen + group + (1|id),
+              family=Gamma(link = 'log'),
+              data = rot_post_co, 
+              prior= prior02,
+              save_pars = save_pars(all = TRUE),
+              iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+              control = list(adapt_delta = 0.99, max_treedepth = 15)),
+              'output/brm/model2', reuse = TRUE)
+
+## models summary 
+summary(model1)
+summary(model2)
+```
+
+Convergence is OK; both models lead to the same conclusions and similar estimates
+
+## PPC, preTreat RotLat: all days
+
+```{r, fig.height=6, fig.width=5}
+pla<-pp_check(model1,type='dens_overlay',ndraws = 50)
+plb<-pp_check(model2,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model1,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(model2,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model1,type='scatter_avg') 
+plb<-pp_check(model2,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model1,type='ecdf_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(model2,type='ecdf_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model1,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(model2,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model1,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(model2,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+### Are there too influential observations?
+par(mfrow=c(1,2))
+plot(loo(model1));loo(model1)
+plot(loo(model2));loo(model2)
+```
+
+Posterior predictive checks (PPC) shows that Gaussian model fits data clearly better than Gamma model. All models are OK, no pareto value \> 0.7, indicating no overly influential observation
+
+Lets to fit two other Gaussian models with different deficnition of pre-treatment rotarod latency
+
+## Setting prior for other models
+
+```{r}
+## preTreat RotLat: 3rd day only
+prior03 <- c(set_prior("student_t(3, 127, 229)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,92)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0,92)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,46)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(10,20)", class = "b", coef = "day_cen"),
+             set_prior("normal(0,20)", class = "b", coef = "session_cen"),
+             set_prior("normal(0,2)", class = "b", coef = "session_cen:day_cen"),
+             set_prior("normal(0.5,2)", class = "b", coef = "mean_lat"))
+
+## preTreat RotLat: 2nd and 3rd day
+prior04 <- c(set_prior("student_t(3, 127, 229)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,92)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0,92)", class = "b", coef = "groupeda.wt"),
+             set_prior("normal(0,46)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(10,20)", class = "b", coef = "day_cen"),
+             set_prior("normal(0,20)", class = "b", coef = "session_cen"),
+             set_prior("normal(0,2)", class = "b", coef = "session_cen:day_cen"),
+             set_prior("normal(0.5,2)", class = "b", coef = "mean_lat.y"))
+```
+
+## Fitting and diagnsotics, preTreat RotLat: 3rd (+2nd) days
+
+```{r, fig.height=8, fig.width=8}
+
+## preTreat RotLat: 3rd day only
+model3 <- run_model(
+          brm(rot_latency ~ 0 + Intercept + mean_lat + session_cen + 
+              day_cen + session_cen:day_cen + group + (1|id),
+              family=gaussian(),
+              data = rot_post_co, 
+              prior= prior03,
+              save_pars = save_pars(all = TRUE),
+              iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+              control = list(adapt_delta = 0.99)),
+              'output/brm/model3', reuse = TRUE)
+
+## preTreat RotLat: 2nd + 3rd day
+model4 <- run_model(
+          brm(rot_latency ~ 0 + Intercept + mean_lat.y + session_cen + 
+              day_cen + session_cen:day_cen + group + (1|id),
+              family=gaussian(),
+              data = rot_post_co, 
+              prior= prior04,
+              save_pars = save_pars(all = TRUE),
+              iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+              control = list(adapt_delta = 0.99)),
+              'output/brm/model4', reuse = TRUE)
+
+## models summary
+summary(model3)
+summary(model4)
+```
+
+All models converged well (Rhat values = 1), ESSs are sufficient
+
+## PPC, preTreat RotLat: 3rd (+2nd) days
+
+```{r}
+pla<-pp_check(model3,type='dens_overlay',ndraws = 50)
+plb<-pp_check(model4,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model3,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(model4,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model3,type='scatter_avg') 
+plb<-pp_check(model4,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model3,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(model4,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(model3,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(model4,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+### Are there too influential observations?
+par(mfrow=c(1,2))
+plot(loo(model3));loo(model3)
+plot(loo(model4));loo(model4)
+```
+
+Everything seems fine.
+
+## Models comparison
+
+Next, we will compare all three Gaussian models using LOO-CV
+
+```{r}
+model1 <- add_criterion(model1, criterion = "loo")
+model3 <- add_criterion(model3, criterion = "loo")
+model4 <- add_criterion(model4, criterion = "loo")
+
+loo_compare(model1, model3, model4)
+```
+
+Using baseline rotarod latency, averaged from all pre-treatment rotarod sessions, is comparable to using covariate from specifically 3rd or 2nd + 3rd day.
+
+The model we currently have is, however, relatively simple. Likely the most importantly, it does not allow modelling the situation when group differ in day-to-day gain (implying motor learning).
+
+Thus, let to create another model, which looks like *model1* but also include interaction between *group* and effect of *time*
+
+## Model including *group : day* interaction
+
+```{r}
+## fitting model
+model5 <- run_model(
+          brm(rot_latency ~ 0 + Intercept + mean_lat.x + session_cen + 
+              day_cen + session_cen:day_cen + group + day_cen:group + (1|id),
+              family=gaussian(),
+              data = rot_post_co, 
+              prior= prior01,
+              save_pars = save_pars(all = TRUE),
+              iter=8000, warmup=2000,chains=2,cores=1,seed=17,
+              control = list(adapt_delta = 0.99, max_treedepth = 15)),
+              'output/brm/model5', reuse = TRUE)
+
+## model summary
+summary(model5)
+
+## prior summary
+prior_summary(model5)
+
+## PPC
+pp_check(model5,type='dens_overlay',ndraws = 50)
+pp_check(model5,type='dens_overlay_grouped',ndraws = 50,group='group') 
+pp_check(model5,type='scatter_avg') 
+pp_check(model5,type="stat_2d", stat = c("max", "min"),ndraws=200)
+pp_check(model5,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+
+## Are there too influential observations?
+
+plot(loo(model5));loo(model5)
+
+## comparing with original model via LOO-CV
+model5 <- add_criterion(model5, criterion = "loo")
+loo_compare(model1, model5) 
+```
+
+Models comparison indicate that more complex model, allowing group-specific change in rotarod performance over day, has better predictive accuracy. The last complex model (Gaussian distribution, ignoring sex, including *day* : *group* interaction) thus will be used as the final model.
+
+The model coverged well, ESSs are sufficient, PPC seems fine.
+
+## Posterior draws extraction
+
+```{r}
+post_fix<-as.data.frame(model5, variable = c("b_Intercept","b_groupctrl.wt",
+                                                       "b_groupeda.wt","b_groupeda.sca"))
+names(post_fix)[1]<-"sca_ctrl"
+
+post_fix$wt_ctrl<-post_fix$sca_ctrl+post_fix$b_groupctrl.wt
+post_fix$wt_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.wt
+post_fix$sca_eda<-post_fix$sca_ctrl+post_fix$b_groupeda.sca
+post_fix$wt_contrast<-post_fix$wt_eda-post_fix$wt_ctrl
+summary(post_fix)
+
+groupquant<-sapply(post_fix[,c(5,6,1,7)],function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant <- groupquant
+```
+
+# Data visualisation
+
+```{r, fig.height=4.1, fig.width=8}
+
+rot_post_co$group <- factor(rot_post_co$group,levels = c('ctrl.wt','eda.wt','ctrl.sca','eda.sca') )
+
+m= matrix(c(1,2), nrow = 1, ncol=2, byrow = TRUE)
+layout(mat = m, heights = c(1),
+       widths = c(0.65, 0.4))
+
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+range<-c(0, 180);scal<-range[2]-range[1]
+xrange<-c(0.5,4.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Rotarod latency (s)",las=1, axes=FALSE,cex.lab=1.2)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+30;if(x>range[2]){break}}
+
+x<-0.5
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+0.5;if(x>4.5){break}}
+
+  
+subdat <- subset(rotarod, pre_post == 'pre' & day == 1) 
+preD1 <- tapply(subdat$rot_latency, list(subdat$group, subdat$session), mean)
+subdat <- subset(rotarod, pre_post == 'pre' & day == 2) 
+preD2 <- tapply(subdat$rot_latency, list(subdat$group, subdat$session), mean)
+subdat <- subset(rotarod, pre_post == 'pre' & day == 3) 
+preD3 <- tapply(subdat$rot_latency, list(subdat$group, subdat$session), mean)
+
+
+subdat <- subset(rotarod, pre_post == 'post' & day == 1) 
+postD1 <- tapply(subdat$rot_latency, list(subdat$group, subdat$session), mean)
+subdat <- subset(rotarod, pre_post == 'post' & day == 2) 
+postD2 <- tapply(subdat$rot_latency, list(subdat$group, subdat$session), mean)
+subdat <- subset(rotarod, pre_post == 'post' & day == 3) 
+postD3 <- tapply(subdat$rot_latency, list(subdat$group, subdat$session), mean)
+
+xl <- c(0.85, 0.95, 1.05, 1.15)
+
+for (x in 1:4){
+lines(preD1[x,]~c(xl),col=cola[x], lwd = 1.6, type = 'o', pch= 16)
+lines(preD2[x,]~c(xl+0.5),col= cola[x], lwd = 1.6, type = 'o', pch= 16)
+lines(preD3[x,]~c(xl+1),col= cola[x], lwd = 1.6,, type = 'o', pch= 16)
+lines(postD1[x,]~c(xl+2),col= cola[x], lwd = 1.6, type = 'o', pch= 16)
+lines(postD2[x,]~c(xl+2.5),col= cola[x], lwd = 1.6, type = 'o', pch= 16)
+lines(postD3[x,]~c(xl+3),col= cola[x], lwd = 1.6, type = 'o', pch= 16)
+}
+
+tckk=-0.02
+
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=30),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(1,1.5,2,3,3.5,4),
+     labels=c(rep("",6)),pos=range[1],tck=tckk)
+lines(c(0.5,4.5), c(0,0))
+text(c(1, 1.5, 2, 3, 3.5, 4) ,c(rep(range[1]-0.05*scal)),
+     c('D1', 'D2', 'D3', 'D1', 'D2', 'D3'), xpd= TRUE)
+
+text(c(1.5, 3.5),c(range[1]-0.117*scal, range[1]-0.117*scal),
+     c('PRE', 'POST'), font = 2, xpd = TRUE)
+lines(c(1,2),c(range[1]-0.085*scal, range[1]-0.085*scal), xpd = TRUE)
+lines(c(3,4),c(range[1]-0.085*scal, range[1]-0.085*scal), xpd = TRUE)
+
+x = 1  
+y = 58;yde <- 10
+lines(c(1.2,1.6),c(y,y), col = cola[x], pch = 16, lwd = 1.6)
+text(2.05, y, 'WT 0', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+lines(c(1.2,1.6),c(y,y), col = cola[x], pch = 16, lwd = 1.6)
+text(2.05, y, 'WT edv', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+lines(c(1.2,1.6),c(y,y), col = cola[x], pch = 16, lwd = 1.6)
+text(2.05, y, 'SCA1 0', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+lines(c(1.2,1.6),c(y,y), col = cola[x], pch = 16, lwd = 1.6)
+text(2.05, y, 'SCA1 edv', col = cola[x])
+points(1.4, y, pch = 16, col = cola[x]); x = x+1; y = y-yde
+
+## probability distributions 
+par(mar=c(2,0,0,0))
+dif<-data.frame(post_fix$wt_contrast,post_fix$b_groupeda.sca,
+                post_fix$b_groupctrl.wt)
+dif<-(dif)
+
+yla<-"Difference in rotarod latency (s)"
+tckk=-0.018
+ste<-seq(-40,60,by=20)
+mons_poste(dif, 0)
+
+zpos=seq(0,1,1/3)
+xx=1;ind=0.4;xpol<- -32
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "Wt: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+```
