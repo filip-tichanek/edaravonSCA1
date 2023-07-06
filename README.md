@@ -20,7 +20,7 @@ The following codes are shown:
 - [***code08_mitochondria_respiration***](https://rpubs.com/filip_tichanek/edaSCA_code08) shows an analysis of mitochondrial respiration capacity in both the cerebellar (*cb*) and hippocampal (*hp*) tissue. Respiration was standardized by either tissue wet weight of (*mg*) or by citrate synthase activity (*cs*), across different phases experiment. Data per tissue and standardization were analysed separately, using multivariate Gamma models with log-link, where respiration in different states of the substrate-uncoupler-inhibitor protocol represented multiple outcomes.
 
 
-! NEXT will be uploaded on 5th and 6th of July, 2023
+! NEXT will be uploaded on 6th and 7th of July, 2023
 
 - ***code09_citrate_syn*** analyze citrate synthase activity in both cerebellar and hippocampal tissue, using gamma models with log-link 
 - ***code10_calbindin*** shows an analysis of calbindin immunofluorescence intensities in the cerebellar molecular layer. The analysis was done via a hierarchical Gaussian model (with a random intercept of *slice* nested in the random intercept of *id*/*subject*), and with the cerebellar region (hemisphere vs. vermis) and immunofluorescence intensity in the neighbouring granular layer as covariates. 
