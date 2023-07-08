@@ -1,0 +1,517 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "Data upload and defining functions"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: true
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+# Import of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+  } ) )
+```
+
+# Custom functions
+
+## *run_model*
+Function to run and save, or load, Bayesian model. The function was written according to online proposal of Paul-Christian Bürkner
+
+```{r}
+    run_model <- function(expr, path, reuse = TRUE) {
+      path <- paste0(path, ".Rds")
+      if (reuse) {
+        fit <- suppressWarnings(try(readRDS(path), silent = TRUE))
+        }
+      if (is(fit, "try-error")) {
+        fit <- eval(expr)
+        saveRDS(fit, file = path)
+        }
+      fit
+    }
+
+```
+
+## *prios*
+
+The function takes model (***m***) fitted with *glmmTMB* package and show prior with sca1 as reference group and the WT genotype as the 1st b regression parameter. The model *m* is based on previous data ([Tichanek et al., 2020](https://www.nature.com/articles/s41598-020-62308-0), *Scientific Reports*).
+
+```{r}
+prios<- function(m){
+  pr<-summary(m)$coefficients$cond[2,c(1,2,4)]
+  if((pr[1]<0)&(pr[3]<0.05)){
+    mu<-(pr[1]+(pr[2]*1.96))
+    sigma<-max(abs(pr[1]-mu),abs(mu))*1.5}
+  else if((pr[1]>0)&(pr[3]<0.05)){
+    mu<-(pr[1]-pr[2]*1.96)
+    sigma<-max(abs(pr[1]-mu),abs(mu))*1.5}
+  else{
+    mu=0
+    sigma=0-abs(pr[1])*1.5}
+  return(c(mu,sigma))}
+```
+
+## *mons_poste*
+
+The function takes data frame of posterior distributions of effect sizes (***datf*** ) and value of zero effect (***tres***). There are two version: *mons_poste6* is for visualizing posterior probabilities on limited space when there are 6 posterior distribution in a single column. *mons_poste* is used otherwise.
+
+```{r}
+## mons_poste for visualisations of posterior distribution
+mons_poste<-function(datf, tres){
+  xx<-1;xax<-data.frame();yax<-data.frame();cisl<-data.frame()
+  repeat{
+    xax[1:512,xx] <-density(datf[,xx])$x
+    yax[1:512,xx]<-density(datf[,xx])$y
+    vec<-data.frame(datf[,xx])
+    cisl[xx,1:7]<-sapply(vec,function(p) quantile(p,probs=c(0.25,0.75,0.025,0.975,0.001,0.999,0.5)))
+    xx<-xx+1;if(xx>dim(datf)[2]){break}}
+  
+  axl<-data.frame(cbind(xax,yax))
+  dim(axl)
+  
+  scaler<- max(xax) - min(xax)
+  uniscal<-round(log10(160/scaler))
+  
+  xrange<- c(min(xax)-0.05*scaler,max(xax));xscaler=xrange[2]-xrange[1]
+  zpos<-c(seq(0,1,by=1/dim(datf)[2]))
+  ymax<-1/(max(yax)*1.8*dim(datf)[2])
+  par(mgp=c(1.6,0.55,0))
+  plot(NULL, xlim=c(xrange[1],xrange[2]),ylim=c(0,1),xlab="",ylab="",las=1, axes=FALSE)
+  
+  xxs<-1
+  repeat{
+   x<-ste[xxs]
+   lines(c(x,x),c(0,1),col="grey70",lwd=0.7,lty=3)
+    xxs<-xxs+1;if(xxs>length(ste)){break}}
+  
+  xx<-1
+  linop=0.05
+  repeat{
+    polygon(xax[,xx],(ymax*yax[,xx])+(zpos[xx])+linop,col=rgb(1,0.9,0.7),border="grey50")
+    polygon(xax[,xx],(ymax*yax[,xx])+(zpos[xx])+linop,col=rgb(0.82,0.82,0.82),border="NA")
+    
+    ax<- axl[,c(xx,xx+dim(datf)[2])] [axl[,xx]>cisl[xx,3]&axl[,xx]<cisl[xx,4],]
+    polygon(c(ax[,1],rev(ax[,1])),
+            c((ymax*ax[,2])+(zpos[xx])+linop,
+              rep((zpos[xx])+linop,length(ax[,2]))
+            ), col=rgb(1,0.88,0.46),border=NA)
+    lines(c(cisl[xx,3],cisl[xx,4]),c((zpos[xx])+linop,(zpos[xx])+linop),lend=1,lwd=3,col="grey10")
+    points(cisl[xx,7],zpos[xx]+linop,lend=2,pch=3,cex=2.2,lwd=1.5,col="grey10")
+    
+    
+    xx<-xx+1
+    if(xx>length(zpos)-1){break}}
+  lines(c(tres,tres),c(0,1),lty=1,col="blue4")
+  axis(side=1,las=1,cex.axis=1.1,
+       at=c(ste),pos=range[1],tck=tckk)
+  lines(c(min(xax)-scaler*0.05,max(xax)),c(range[1],range[1]))
+  
+  xx<-1
+  repeat{
+    lines(c(xrange[1]+0.2*xscaler,xrange[1]+1*xscaler),
+          c(zpos[xx]+zpos[2]*0.88,zpos[xx]+zpos[2]*0.9),
+          lwd=22,col="white",lend=2)
+    text(xrange[1]+0.55*xscaler,zpos[xx]+zpos[2]*0.88,
+         bquote(.(round(cisl[xx,7],uniscal)) *
+                  " (" *.(round(cisl[xx,3],uniscal)) *
+                  " to "* .(round(cisl[xx,4],uniscal)) * ")")
+         ,xpd=TRUE,cex=1,col=rgb(0.4, 0.1, 0))
+    pd<-p_dir(datf[,xx],tres)
+    pd2<- -round(log10(1-pd))+1
+    text(xrange[1]+0.9*xscaler,zpos[xx]+zpos[2]*0.6,
+         bquote(.(round(pd,pd2)))
+         ,xpd=TRUE,cex=1.1,col=rgb(0.6, 0.1, 0.8))
+    xx=xx+1;if(xx>length(zpos)-1){break}}
+  text(mean(c(xrange[1],max(xax))),range[1]-0.12,paste(yla),xpd=T,cex=1.1)
+}
+
+
+## mons_poste6 for visualisations of 6 posterior distributions in a single column of the figure 
+mons_poste6<-function(datf, tres){
+  xx<-1;xax<-data.frame();yax<-data.frame();cisl<-data.frame()
+  repeat{
+    xax[1:512,xx] <-density(datf[,xx])$x
+    yax[1:512,xx]<-density(datf[,xx])$y
+    vec<-data.frame(datf[,xx])
+    cisl[xx,1:7]<-sapply(vec,function(p) quantile(p,probs=c(0.25,0.75,0.025,0.975,0.001,0.999,0.5)))
+    xx<-xx+1;if(xx>dim(datf)[2]){break}}
+  
+  axl<-data.frame(cbind(xax,yax))
+  dim(axl)
+  
+  scaler<- max(xax) - min(xax)
+  uniscal<-round(log10(160/scaler))
+  
+  xrange<- c(min(xax)-0.05*scaler,max(xax));xscaler=xrange[2]-xrange[1]
+  zpos<-c(seq(0,1,by=1/dim(datf)[2]))
+  ymax<-1/(max(yax)*1.8*dim(datf)[2])
+  par(mgp=c(1.6,0.55,0))
+  plot(NULL, xlim=c(xrange[1],xrange[2]),ylim=c(0,1),xlab="",ylab="",las=1, axes=FALSE)
+  
+  xxs<-1
+  repeat{
+    x<-ste[xxs]
+    lines(c(x,x),c(0,1),col="grey70",lwd=0.7,lty=3)
+    xxs<-xxs+1;if(xxs>length(ste)){break}}
+  
+  xx<-1
+  linop=0.01
+  repeat{
+    polygon(xax[,xx],(ymax*yax[,xx])+(zpos[xx])+linop,col=rgb(1,0.9,0.7),border="grey50")
+    polygon(xax[,xx],(ymax*yax[,xx])+(zpos[xx])+linop,col=rgb(0.82,0.82,0.82),border="NA")
+    
+    ax<- axl[,c(xx,xx+dim(datf)[2])] [axl[,xx]>cisl[xx,3]&axl[,xx]<cisl[xx,4],]
+    polygon(c(ax[,1],rev(ax[,1])),
+            c((ymax*ax[,2])+(zpos[xx])+linop,
+              rep((zpos[xx])+linop,length(ax[,2]))
+            ), col=rgb(1,0.88,0.46),border=NA)
+    lines(c(cisl[xx,3],cisl[xx,4]),c((zpos[xx])+linop,(zpos[xx])+linop),lend=1,lwd=3,col="grey10")
+    points(cisl[xx,7],zpos[xx]+linop,lend=2,pch=3,cex=2.2,lwd=1.5,col="grey10")
+    
+    xx<-xx+1
+    if(xx>length(zpos)-1){break}}
+  lines(c(tres,tres),c(0,1),lty=1,col="blue4")
+  axis(side=1,las=1,cex.axis=1.1,
+       at=c(ste),pos=0,tck=tckk,xpd=TRUE)
+  lines(c(min(xax)-scaler*0.05,max(xax)),c(range[1],range[1]))
+  
+  xx<-1
+  repeat{
+    lines(c(xrange[1]+0.2*xscaler,xrange[1]+1*xscaler),
+          c(zpos[xx]+zpos[2]*0.88,zpos[xx]+zpos[2]*0.9),
+          lwd=22,col="white",lend=2)
+    text(xrange[1]+0.55*xscaler,zpos[xx]+zpos[2]*0.88,
+         bquote(.(round(cisl[xx,7],uniscal)) *
+                  " (" *.(round(cisl[xx,3],uniscal)) *
+                  " to "* .(round(cisl[xx,4],uniscal)) * ")")
+         ,xpd=TRUE,cex=1.2,col=rgb(0.4, 0.1, 0))
+    pd<-p_dir(datf[,xx],tres)
+    pd2<- -round(log10(1-pd))+1
+    text(xrange[1]+0.9*xscaler,zpos[xx]+zpos[2]*0.6,
+         bquote(.(round(pd,pd2)))
+         ,xpd=TRUE,cex=1.2,col=rgb(0.6, 0.1, 0.8))
+    xx=xx+1;if(xx>length(zpos)-1){break}}
+  text(mean(c(xrange[1],max(xax))),0-0.12,paste(yla),xpd=T,cex=1.1)
+}
+
+```
+
+## *p_dir*
+
+Takes data frame of posterior distribution of effect size (***data***) and value of zero effect (***tres***) and calculates *probability of direction*
+
+```{r}
+p_dir<-function(data,tres){
+  1-((min(length(data[data>tres]),length(data[data<tres])))/(length(data)))
+}
+```
+
+## Functions for data transformations
+
+```{r}
+logit<-function(x){
+  log(x/(1-x))
+}
+
+inv.logit<-function(x){
+  exp(x)/(exp(x)+1)
+  }
+
+asinTransform <- function(p) { asin(sqrt(p)) }
+
+revAsin <- function(p){sin(p)^2}
+```
+
+# Colors definitions
+
+```{r}
+alp=1;cola<-c(
+  rgb(0.7,  0.7, 0.25,alpha=alp),
+  rgb(0.55,0.55, 0.55,alpha=alp),
+  rgb(0.9,0,0,alpha=alp),
+  rgb(0.1, 0.1, 1,alpha=alp))
+
+alp=0.2;colb<-c(
+  rgb(0.7,  0.7, 0.25,alpha=alp),
+  rgb(0.55,0.55, 0.55,alpha=alp),
+  rgb(0.9,0,0,alpha=alp),
+  rgb(0.1, 0.1, 1,alpha=alp))
+
+alp=0.5;colc<-c(
+  rgb(0.7,  0.7, 0.25,alpha=alp),
+  rgb(0.55,0.55, 0.55,alpha=alp),
+  rgb(0.9,0,0,alpha=alp),
+  rgb(0.1, 0.1, 1,alpha=alp))
+
+alp=0.4;cold<-c(
+  rgb(0.7,  0.7, 0.25,alpha=alp),
+  rgb(0.55,0.55, 0.55,alpha=alp),
+  rgb(0.9,0,0,alpha=alp),
+  rgb(0.1, 0.1, 1,alpha=alp))
+
+cole=cola
+```
+
+# Data upload and wrangling
+
+## Behavioral data
+
+```{r}
+## upload of data
+behav<-read.csv("source_data/behav_dat.csv", stringsAsFactors = T)
+
+## subject (id) as factor
+behav$id <- as.factor(behav$id)
+
+## defining factor 'group'
+behav$group<-interaction(behav$treatment,behav$genotype)
+behav$group<-factor(behav$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+## defining numerical version of 'sex' variable
+behav$sex_num<-ifelse(behav$sex=="f",-0.5,0.5)
+
+## defining variable combining 'genotype', 'treatment' and 'sex' into single variable ('group_sex')
+behav$group_sex<-interaction(behav$treatment,behav$genotype,behav$sex)
+behav$group_sex<-factor(behav$group_sex, levels=c('ctrl.wt.f','ctrl.wt.m',
+                                                 'eda.wt.f','eda.wt.m',
+                                                 'ctrl.sca.f','ctrl.sca.m',
+                                                 'eda.sca.f','eda.sca.m'))
+
+
+## substetting data according to sex
+behav_m<-subset(behav,behav$sex=="m")
+behav_f<-subset(behav,behav$sex=="f")
+
+## data summary
+summary(behav)
+
+```
+
+## Rotarod data
+
+```{r}
+## upload
+rotarod<-read.csv("source_data/rotarod_data.csv",stringsAsFactors = T)
+
+## data summary
+summary(rotarod)
+
+```
+
+## Data from [Tichanek et al., 2020, SciRep](https://www.nature.com/articles/s41598-020-62308-0)
+
+```{r}
+date_scirep<- read.csv("source_data/scirep_2020_data.csv",sep=";",stringsAsFactors = T)
+young_scirep <- subset(date_scirep,date_scirep$age_cohort=="sca1_w06"|date_scirep$age_cohort=="sca1_w10")
+young_scirep$genotype<-relevel(young_scirep$genotype,ref="tg+")
+
+## data summary
+summary(young_scirep)
+```
+
+## Mitochondrial respiration data
+
+```{r}
+
+## data upload 
+mitochondria <- read.csv("source_data/mitochondria.csv", stringsAsFactors = T)
+
+## data summary
+summary(mitochondria)
+
+```
+
+## Calbindin immunofluorescence intensity
+
+```{r}
+## upload data of intensity in molecular layer
+calb <- read.csv("source_data/calbindin.csv", sep = ';', header = TRUE, stringsAsFactors = T)
+
+## subject as factor
+calb$id <- as.factor(calb$id)
+
+## slice as factor, nested in subject
+calb$slice_id <- interaction(calb$id, calb$slice)
+
+## defining groups
+calb$group<-interaction(calb$treatment,calb$genotype)
+calb$group<-factor(calb$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+## sex as numerical variable, scale to -0.5 and 0.5 values
+calb$sex_num<-ifelse(calb$sex=="f",-0.5,0.5)
+
+## defining factor combining 'group' and 'sex'
+calb$group_sex<-interaction(calb$treatment,calb$genotype,calb$sex)
+calb$group_sex<-factor(calb$group_sex, levels=c('ctrl.wt.f','ctrl.wt.m',
+                                                  'ctrl.sca.f','ctrl.sca.m',
+                                                  'eda.sca.f','eda.sca.m'))
+
+## upload of calbindin intensities in granular layer (GL)
+calbgran <- read.csv("source_data/calbgran.csv", sep = ';', header = TRUE, stringsAsFactors = T)
+calbgran$id <- as.factor(calbgran$id)
+calbgran$slice_id <- interaction(calbgran$id, calbgran$slice)
+
+## there are two GL measurements neighouring one molecular layer measurement. 
+## Lets delete one to simplify combining of both datasets
+calbgran <- calbgran %>% filter(slice_id != '13.9' | order != 'F')
+calb <- calb %>% mutate(
+  mean_gran = calbgran$mean)
+
+calb$group <- factor(calb$group)
+
+## data summary
+summary(calb)
+
+```
+
+## PSA-NCAM data
+
+```{r}
+
+## upload data
+psa <- read.csv('source_data/psa_ncam.csv', stringsAsFactors = T)
+
+## upload data for connecting psa table with metadata
+histid <- read.csv('source_data/hist_id.csv', stringsAsFactors = T)
+
+## connecting both tables
+psa <- left_join(psa, histid, by = 'hist_id')
+
+## removing missing data
+psa <- subset(psa, psa$psa_ncam != 'X' & psa$psa_ncam != '')
+psa$psa_ncam <- as.numeric(as.character(psa$psa_ncam))
+
+## defining psa_ncam and numerical variable
+psa_nc <- subset(psa, grepl('control', as.character(psa$slice)) == FALSE)
+
+## defning factor of slice order
+psa_nc$slice <- factor(psa_nc$slice)
+
+## slice order as numerical variable
+psa_nc$slice_n <- as.numeric(as.character(psa_nc$slice))
+
+## data summary
+summary(psa_nc)
+
+```
+
+## Hippocampal volume data
+
+```{r}
+## upload data
+hp_vol <- read.csv('source_data/hip_vol.csv', stringsAsFactors = T)
+
+## defining 'group'
+hp_vol$group<-interaction(hp_vol$treatment,hp_vol$genotype)
+hp_vol$group<-factor(hp_vol$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+## rescaling 'sex'
+hp_vol$sex_num<-ifelse(hp_vol$sex=="f",-0.5,0.5)
+
+
+## defining factor combining 'group' and 'sex'
+hp_vol$group_sex<-interaction(hp_vol$treatment,hp_vol$genotype,hp_vol$sex)
+hp_vol$group_sex<-factor(hp_vol$group_sex, levels=c('ctrl.wt.f','ctrl.wt.m',
+                                                  'ctrl.sca.f','ctrl.sca.m',
+                                                  'eda.sca.f','eda.sca.m'))
+
+## data summary
+summary(hp_vol)
+
+```
+
+## Cerebellar molecular layer volume data
+
+```{r}
+## data upload
+cbml <- read.csv('source_data/cbml.csv', stringsAsFactors = T) 
+
+## defining 'group'
+cbml$group<-interaction(cbml$treatment,cbml$genotype)
+cbml$group<-factor(cbml$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+## rescaling 'sex' factor
+cbml$sex_num<-ifelse(cbml$sex=="f",-0.5,0.5)
+
+## defining 'group_sex'
+cbml$group_sex<-interaction(cbml$treatment,cbml$genotype,cbml$sex)
+cbml$group_sex<-factor(cbml$group_sex, levels=c('ctrl.wt.f','ctrl.wt.m',
+                                                    'ctrl.sca.f','ctrl.sca.m',
+                                                    'eda.sca.f','eda.sca.m'))
+## subject as factor
+cbml$id <- factor(cbml$id)
+
+## rename the outcome variable
+cbml$volume <- cbml$cb_ml
+
+## data summary
+summary(cbml)
+
+```
+
+## Citrate synthase activity data
+
+```{r}
+
+## data upload
+csyn <- read.csv('source_data/citrate_synt.csv', stringsAsFactors = T)
+
+## defining 'group'
+csyn$group<-interaction(csyn$treatment,csyn$genotype)
+csyn$group<-factor(csyn$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+
+## subject as factor
+csyn$id <- factor(csyn$id)
+
+## data summary
+summary(csyn)
+
+```
+
+# Saving the environment
+
+Save the R environment to load data in other scripts
+
+```{r}
+if(T){save.image(file='source_data/myEnvironment.RData')} else {print('Env NOT SAVED NOW!')}
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```

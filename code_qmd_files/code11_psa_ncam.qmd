@@ -1,0 +1,858 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "PSA-NCAM immunofluorescence intensity in hippocampus"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: false
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+
+PSA-NCAM immunofluorescent intensity was measured in 4 part of hippocampus. The most important is *Cornu Ammonis - stratum laconosum-moleculare* (***CA-SRLM***), where our previous study found difference between SCA1 and WT genotype. Model specification will be thus done for the *CA-SRLM* and the same specification will be done also for other 3 hippocampal subregions. 
+
+
+# Upload of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+library(bayesplot)
+library(gtsummary)
+library(vegan)
+library(knitr)  
+library(ggplot2)  
+  } ) )
+```
+
+# Data upload and wrangling
+
+```{r}
+## Data upload
+load("source_data/myEnvironment.RData")
+
+## defining new variables
+psa_nc$group<-interaction(psa_nc$treat,psa_nc$genotype)
+psa_nc$group<-factor(psa_nc$group,levels=c('ctrl.wt','eda.wt','ctrl.sca','eda.sca'))
+psa_nc$group<-factor(psa_nc$group)
+psa_nc$sex_num<-ifelse(psa_nc$sex=="f",-0.5,0.5)
+
+psa_nc$group_sex<-interaction(psa_nc$treat,psa_nc$genotype,psa_nc$sex)
+psa_nc$group_sex<-factor(psa_nc$group_sex, levels=c('ctrl.wt.f','ctrl.wt.m',
+                                                  'eda.wt.f','eda.wt.m',
+                                                  'ctrl.sca.f','ctrl.sca.m',
+                                                  'eda.sca.f','eda.sca.m'))
+
+## id as factor
+psa_nc <- psa_nc %>% mutate(
+    id = as.factor(id))
+
+
+## subsetting dataset
+
+ca1_slm <- psa_nc %>% filter(
+  structure == 'CA1 SLM')
+
+c4_pyr <- psa_nc %>% filter(
+  structure == 'CA4 pyr')
+
+dg_ml <- psa_nc %>% filter(
+  structure == 'DG-ML')
+
+dg_pl <- psa_nc %>% filter(
+  structure == 'DG PL hilus')
+```
+
+## Data exploration
+
+```{r, fig.height=6, fig.width=8}
+psa_nc$slice <- factor(psa_nc$slice, levels=c(as.character(1:14)))
+
+psa_nc %>% filter(
+  slice %in% 1:12,
+) %>%
+  ggplot(aes(x = slice, y = psa_ncam, by = group, color = group))+
+  geom_boxplot()+
+  facet_wrap(~structure)
+
+
+psa_nc %>% filter(
+  slice %in% 1:12
+) %>%
+  ggplot(aes(x = slice, y = psa_ncam, by = sex, color = sex))+
+  geom_boxplot()+
+  facet_wrap(~group + structure)
+
+```
+The PSA-NCAM immunofluorescence (***PSA-NCAM IF***) decreases from frontal to caudal region and is reduced in males. The change from frontal to caudal regions is non-linear and will be included as such, i.e. as thin-plate spline. As the non-linearity is soft, number of knots will be limited to 3. 
+
+Distribution seems asymmetrical, with many outliers above median. Gamma regression will be thus used. The question is if:
+
+- (i) to include sex
+- (ii) use random intercept of *id*, or nested (*slice* nested in *id*). 
+
+As the *slice* is already fixed-effect factor, and the numbers of measurements per slice and structure is just 2, default setting will be simple random intercept *id*. 
+
+
+# CA-SRLM
+
+## Modelling
+
+Firstly, we will fit and compare 3 models:
+
+- (i) sex included, simple random intercept *id*
+- (ii) sex NOT included, simple random intercept *id*
+- (iii) sex included, random effect of *slice* nested in *id*
+
+### Setting priors
+
+Summary statistics for prior specification
+```{r}
+sd(log(ca1_slm$psa_ncam))*c(5)
+log(mean(ca1_slm$psa_ncam))
+```
+
+Setting the priors
+```{r}
+ca1_slm$group<-relevel(ca1_slm$group,ref='ctrl.sca')
+
+prior01 <- c(set_prior("student_t(3, 2.5, 1.5)", class = "b", coef = "Intercept"),
+             set_prior("normal(0.2, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "sex_num"))
+
+prior02 <- c(set_prior("student_t(3, 2.5, 1.5)", class = "b", coef = "Intercept"),
+             set_prior("normal(0.2, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"))
+```
+
+
+### Models fitting and convergence diagnostics
+```{r}
+
+## fitting models
+psa_ca1_slm1 <- run_model( 
+        brm(psa_ncam~0+Intercept+group+ s(slice_n, k=3) + sex_num + (1|id),
+                  data= ca1_slm, prior = prior01,
+                  family=Gamma(link = 'log'),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                   'output/brm/psa_ca1_slm1', reuse = TRUE)
+
+psa_ca1_slm2 <- run_model( 
+        brm(psa_ncam~0+Intercept+group+ s(slice_n, k=3) + (1|id),
+                  data= ca1_slm, prior = prior02,
+                  family=Gamma(link = 'log'),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                   'output/brm/psa_ca1_slm2', reuse = TRUE)
+
+psa_ca1_slm3 <- run_model( 
+        brm(psa_ncam~0+Intercept+group+ s(slice_n, k=3) + sex_num + (1|id/slice),
+                  data= ca1_slm, prior = prior01,
+                  family=Gamma(link = 'log'),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                   'output/brm/psa_ca1_slm3', reuse = TRUE)
+  
+## chains for crucial fixed-effect predictors      
+mcmc_trace(psa_ca1_slm1, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+mcmc_trace(psa_ca1_slm2, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+mcmc_trace(psa_ca1_slm3, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## summary of models
+summary(psa_ca1_slm1)
+summary(psa_ca1_slm2)
+summary(psa_ca1_slm3)
+```
+Convergence and ESS are OK except the last model (with hierarchical random effects) where tail ESS for SD(Intercept) is low. Conclusions from all models would be similar.
+
+### PPC
+```{r}
+pla<-pp_check(psa_ca1_slm1,type='dens_overlay',ndraws = 50)
+plb<-pp_check(psa_ca1_slm2,type='dens_overlay',ndraws = 50) 
+plc<-pp_check(psa_ca1_slm3,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, plc, labels=c("A", "B", "C"), ncol = 1, nrow = 3)
+
+pla<-pp_check(psa_ca1_slm1,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(psa_ca1_slm2,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plc<-pp_check(psa_ca1_slm2,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, plc, labels= c("A", "B", "C"), ncol = 1, nrow = 3)
+
+pla<-pp_check(psa_ca1_slm1,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(psa_ca1_slm2,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plc<-pp_check(psa_ca1_slm3,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, plc, labels=c("A", "B", "C"), ncol = 1, nrow = 3)
+
+
+### Are there too influential observations?
+par(mfrow=c(1,3))
+plot(loo(psa_ca1_slm1));loo(psa_ca1_slm1)
+plot(loo(psa_ca1_slm2));loo(psa_ca1_slm2)
+plot(loo(psa_ca1_slm3));loo(psa_ca1_slm3)
+```
+The last model has almost 9 Pareto k diagnostic values over 0.5 and 3 very bad. As it also is associated with computation difficulties (low ESS), we will not use this model. Lets compare models with simpler random effect structure
+
+### Models comparison
+```{r}
+psa_ca1_slm1 <- add_criterion(psa_ca1_slm1, criterion = "loo")
+psa_ca1_slm2 <- add_criterion(psa_ca1_slm2, criterion = "loo")
+
+loo_compare(psa_ca1_slm1, psa_ca1_slm2)
+```
+They are comparable (model with sex very slighlty better). However, given the fact that there often no overlap between sexes (per given structure and order of slice) and the clear effect of sex, sex will be included to final models 
+
+### Extraction of posterior samples
+```{r}
+post_fix_ca1_slm <- as.data.frame(psa_ca1_slm1, variable = c("b_Intercept","b_groupctrl.wt",
+                                                      "b_groupeda.sca"), )
+names(post_fix_ca1_slm)[1]<-"sca_ctrl"
+
+post_fix_ca1_slm$wt_ctrl<-post_fix_ca1_slm$sca_ctrl+post_fix_ca1_slm$b_groupctrl.wt
+post_fix_ca1_slm$sca_eda<-post_fix_ca1_slm$sca_ctrl+post_fix_ca1_slm$b_groupeda.sca
+summary(post_fix_ca1_slm)
+
+groupquant_ca1_slm<-sapply(post_fix_ca1_slm[,c(4,1,5)],
+                           function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant_ca1_slm <- exp(groupquant_ca1_slm)
+```
+
+# CA4
+
+
+## Modelling
+
+Summary statistics to get prior
+```{r}
+c4_pyr$group<-relevel(c4_pyr$group,ref='ctrl.sca')
+
+
+sd(log(c4_pyr$psa_ncam))*c(5)
+log(mean(c4_pyr$psa_ncam))
+```
+
+### Prior setting
+```{r}
+c4_pyr$group<-relevel(c4_pyr$group,ref='ctrl.sca')
+
+prior01 <- c(set_prior("student_t(3, 2.4, 1.3)", class = "b", coef = "Intercept"),
+             set_prior("normal(0.2, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "sex_num"))
+```
+
+### Model fit and convergence check
+```{r}
+psa_c4_pyr <- run_model( 
+        brm(psa_ncam~0+Intercept+group+ s(slice_n, k=3) + sex_num + (1|id),
+                  data= c4_pyr, prior = prior01,
+                  family=Gamma(link = 'log'),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                   'output/brm/psa_c4_pyr', reuse = TRUE)
+
+## chains for crucial fixed-effect predictors      
+mcmc_trace(psa_c4_pyr, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## summary of models
+summary(psa_c4_pyr)
+```
+Everything is OK
+
+### PPC
+```{r}
+pp_check(psa_c4_pyr,type='dens_overlay',ndraws = 50)
+pp_check(psa_c4_pyr,type='dens_overlay_grouped',ndraws = 50,group='group')
+pp_check(psa_c4_pyr,type='scatter_avg', ndraws = 50)
+pp_check(psa_c4_pyr,type="stat_2d", stat = c("max", "min"),ndraws=100)
+pp_check(psa_c4_pyr,type="stat_2d", stat = c("mean", "sd"),ndraws=100)
+```
+PPC seems mostly OK
+
+### Posterior draws extraction
+```{r}
+post_fix_c4_pyr <- as.data.frame(psa_c4_pyr, variable = c("b_Intercept","b_groupctrl.wt",
+                                                        "b_groupeda.sca"), )
+names(post_fix_c4_pyr)[1]<-"sca_ctrl"
+
+post_fix_c4_pyr$wt_ctrl<-post_fix_c4_pyr$sca_ctrl+post_fix_c4_pyr$b_groupctrl.wt
+post_fix_c4_pyr$sca_eda<-post_fix_c4_pyr$sca_ctrl+post_fix_c4_pyr$b_groupeda.sca
+summary(post_fix_c4_pyr)
+
+groupquant_c4_pyr<-sapply(post_fix_c4_pyr[,c(4,1,5)],
+                        function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant_c4_pyr <- exp(groupquant_c4_pyr)
+```
+
+
+# DG ML
+
+## Modelling
+
+Summary statistics to get prior
+```{r}
+dg_ml$group<-relevel(dg_ml$group,ref='ctrl.sca')
+summary(dg_ml)
+
+
+sd(log(dg_ml$psa_ncam))*c(5)
+log(mean(dg_ml$psa_ncam))
+```
+
+### Prior setting
+```{r}
+dg_ml$group<-relevel(dg_ml$group,ref='ctrl.sca')
+
+prior01 <- c(set_prior("student_t(3, 2.6, 1.6)", class = "b", coef = "Intercept"),
+             set_prior("normal(0, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "sex_num"))
+```
+
+### Model fit and convergence check
+```{r}
+psa_dgml <- run_model( 
+        brm(psa_ncam~0+Intercept+group+ s(slice_n, k=3) + sex_num + (1|id),
+                  data= dg_ml, prior = prior01,
+                  family=Gamma(link = 'log'),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                   'output/brm/psa_dgml', reuse = TRUE)
+
+## chains for crucial fixed-effect predictors      
+mcmc_trace(psa_dgml, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## summary of models
+summary(psa_dgml)
+```
+Everything is OK
+
+### PPC
+```{r}
+pp_check(psa_dgml,type='dens_overlay',ndraws = 50)
+pp_check(psa_dgml,type='dens_overlay_grouped',ndraws = 50,group='group')
+pp_check(psa_dgml,type='scatter_avg', ndraws = 50)
+pp_check(psa_dgml,type="stat_2d", stat = c("max", "min"),ndraws=100)
+pp_check(psa_dgml,type="stat_2d", stat = c("mean", "sd"),ndraws=100)
+```
+PPC seems mostly OK
+
+### Posterior draws extraction
+```{r}
+post_fix_dgml <- as.data.frame(psa_dgml, variable = c("b_Intercept","b_groupctrl.wt",
+                                                        "b_groupeda.sca"), )
+names(post_fix_dgml)[1]<-"sca_ctrl"
+
+post_fix_dgml$wt_ctrl<-post_fix_dgml$sca_ctrl+post_fix_dgml$b_groupctrl.wt
+post_fix_dgml$sca_eda<-post_fix_dgml$sca_ctrl+post_fix_dgml$b_groupeda.sca
+summary(post_fix_dgml)
+
+groupquant_dgml<-sapply(post_fix_dgml[,c(4,1,5)],
+                        function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant_dgml <- exp(groupquant_dgml)
+
+```
+
+
+# DG hilus
+
+## Modelling
+
+Summary statistics to get prior
+```{r}
+dg_pl$group<-relevel(dg_pl$group,ref='ctrl.sca')
+summary(dg_pl)
+
+
+sd(log(dg_pl$psa_ncam))*c(5)
+log(mean(dg_pl$psa_ncam))
+```
+
+### Prior setting
+```{r}
+dg_pl$group<-relevel(dg_pl$group,ref='ctrl.sca')
+
+prior01 <- c(set_prior("student_t(3, 2.6, 1.2)", class = "b", coef = "Intercept"),
+             set_prior("normal(0.2, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0, 1.2)"  , class = "b", coef = "sex_num"))
+```
+
+### Model fit and convergence check
+```{r}
+psa_dg_pl <- run_model( 
+        brm(psa_ncam~0+Intercept+group+ s(slice_n, k=3) + sex_num + (1|id),
+                  data= dg_pl, prior = prior01,
+                  family=Gamma(link = 'log'),
+                  save_pars = save_pars(all = TRUE),
+                  iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                  control = list(adapt_delta = 0.99)),
+                   'output/brm/psa_dg_pl', reuse = TRUE)
+
+## chains for crucial fixed-effect predictors      
+mcmc_trace(psa_dg_pl, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## summary of models
+summary(psa_dg_pl)
+```
+Everything is OK
+
+### PPC
+```{r}
+pp_check(psa_dg_pl,type='dens_overlay',ndraws = 50)
+pp_check(psa_dg_pl,type='dens_overlay_grouped',ndraws = 50,group='group')
+pp_check(psa_dg_pl,type='scatter_avg', ndraws = 50)
+pp_check(psa_dg_pl,type="stat_2d", stat = c("max", "min"),ndraws=100)
+pp_check(psa_dg_pl,type="stat_2d", stat = c("mean", "sd"),ndraws=100)
+```
+PPC seems mostly OK
+
+### Posterior draws extraction
+```{r}
+post_fix_dg_pl <- as.data.frame(psa_dg_pl, variable = c("b_Intercept","b_groupctrl.wt",
+                                                        "b_groupeda.sca"), )
+names(post_fix_dg_pl)[1]<-"sca_ctrl"
+
+post_fix_dg_pl$wt_ctrl<-post_fix_dg_pl$sca_ctrl+post_fix_dg_pl$b_groupctrl.wt
+post_fix_dg_pl$sca_eda<-post_fix_dg_pl$sca_ctrl+post_fix_dg_pl$b_groupeda.sca
+summary(post_fix_dg_pl)
+
+groupquant_dg_pl<-sapply(post_fix_dg_pl[,c(4,1,5)],
+                        function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+groupquant_dg_pl <- exp(groupquant_dg_pl)
+```
+
+
+# Data and model visualization
+
+In data visualization, individual points represent average per subject. Violin plot (area indicating data distribution) was, in contrast, constructed on the basis of individual data points (non-averaged)
+
+```{r, fig.height=6, fig.width=8.3}
+
+suppressWarnings(suppressMessages( {
+
+range<-c(0,40);scal<-range[2]-range[1]
+
+
+mat <- matrix(c(15,1, 1, 2, 2,
+                 5, 7, 8, 9,10, 
+                16, 3, 3, 4, 4,
+                 6,11,12,13,14), byrow = TRUE, ncol = 5, nrow = 4)
+layout(mat = mat, heights = c(0.04, 0.46, 0.04, 0.46),
+       widths = c(0.02,rep(0.98/4, 4)) )
+
+par(mar=c(0,0,0,0))
+par(mgp=c(0,0,0))
+
+plot(NULL, axes=FALSE,xlab="",ylab="",xlim=c(-1,1),ylim=c(-0.85,0.85))
+text(0,-0.2,"DG-ML",cex=1.6,font=3,xpd=TRUE)
+
+plot(NULL, axes=FALSE,xlab="",ylab="",xlim=c(-1,1),ylim=c(-0.85,0.85))
+text(0,-0.2,"DG-hilus",cex=1.6,font=3,xpd=TRUE)
+
+plot(NULL, axes=FALSE,xlab="",ylab="",xlim=c(-1,1),ylim=c(-0.85,0.85))
+text(0,-0.2,"CA1-SRLM",cex=1.6,font=3,xpd=TRUE)
+
+plot(NULL, axes=FALSE,xlab="",ylab="",xlim=c(-1,1),ylim=c(-0.85,0.85))
+text(0,-0.2,"CA4-PL",cex=1.6,font=3,xpd=TRUE)
+
+
+
+plot(NULL, axes=FALSE,xlab="",ylab="",xlim=c(-1,1),
+     ylim=c(range[1],range[2]) )
+text(0,range[1]+scal*0.5,"PSA-NCAM immunofluorescence", cex=1.15,srt=90)
+
+plot(NULL, axes=FALSE,xlab="",ylab="",xlim=c(-1,1),
+     ylim=c(range[1],range[2]) )
+text(0,range[1]+scal*0.5,"PSA-NCAM immunofluorescence", cex=1.15,srt=90)
+
+## DG-ML
+par(mar=c(2.2,2,0,0))
+par(mgp=c(2,0.6,0))
+
+
+dg_ml$group<-factor(dg_ml$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(dg_ml$psa_ncam~dg_ml$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+dg_ml_sum <- dg_ml %>% group_by(id, group, sex_num) %>% summarize(psa_ncam = mean(psa_ncam))
+
+
+beeswarm(dg_ml_sum$psa_ncam~dg_ml_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+dg_ml_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_dgml[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_dgml[1,xx],groupquant_dgml[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),
+     labels=c(rep("",length(seq(range[1],range[2],by=10)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+ypos<-39;xpos=1
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_dgml$b_groupeda.sca,
+                post_fix_dgml$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Fold-difference in PSA-NCAM IF"
+tckk=-0.018
+ste<-seq(0.5, 2.5,by=0.5)
+mons_poste(dif,1)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.4;xpol<- 2
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+
+
+
+## DG-hilus
+par(mar=c(2.2,2,0,0))
+par(mgp=c(2,0.6,0))
+
+
+dg_pl$group<-factor(dg_pl$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(dg_pl$psa_ncam~dg_pl$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+dg_pl_sum <- dg_pl %>% group_by(id, group, sex_num) %>% summarize(psa_ncam = mean(psa_ncam))
+
+
+beeswarm(dg_pl_sum$psa_ncam~dg_pl_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+dg_pl_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_dg_pl[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_dg_pl[1,xx],groupquant_dg_pl[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),
+     labels=c(rep("",length(seq(range[1],range[2],by=10)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+# ypos<-39;xpos=1
+# points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+# text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+# points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+# text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_dg_pl$b_groupeda.sca,
+                post_fix_dg_pl$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Fold-difference in PSA-NCAM IF"
+tckk=-0.018
+ste<-seq(0.5, 2.5,by=0.5)
+mons_poste(dif,1)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.4;xpol<- 1.7
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+
+
+
+
+## CA-SRLM
+par(mar=c(2.2,2,0,0))
+par(mgp=c(2,0.6,0))
+
+
+ca1_slm$group<-factor(ca1_slm$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(ca1_slm$psa_ncam~ca1_slm$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+ca1_slm_sum <- ca1_slm %>% group_by(id, group, sex_num) %>% summarize(psa_ncam = mean(psa_ncam))
+
+
+beeswarm(ca1_slm_sum$psa_ncam~ca1_slm_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+ca1_slm_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_ca1_slm[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_ca1_slm[1,xx],groupquant_ca1_slm[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),
+     labels=c(rep("",length(seq(range[1],range[2],by=10)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+# ypos<-39;xpos=1
+# points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+# text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+# points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+# text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_ca1_slm$b_groupeda.sca,
+                post_fix_ca1_slm$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Fold-difference in PSA-NCAM IF"
+tckk=-0.018
+ste<-seq(0.5, 2.5,by=0.5)
+mons_poste(dif,1)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.4;xpol<- 1.7
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+
+
+
+
+## CA4 - pyramidal layer
+par(mar=c(2.2,2,0,0))
+par(mgp=c(2,0.6,0))
+
+
+c4_pyr$group<-factor(c4_pyr$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="",las=1, axes=FALSE,cex.lab=1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>4.5){break}}
+
+vioplot(c4_pyr$psa_ncam~c4_pyr$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+c4_pyr_sum <- c4_pyr %>% group_by(id, group, sex_num) %>% summarize(psa_ncam = mean(psa_ncam))
+
+
+beeswarm(c4_pyr_sum$psa_ncam~c4_pyr_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+c4_pyr_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_c4_pyr[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_c4_pyr[1,xx],groupquant_c4_pyr[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),
+     labels=c(rep("",length(seq(range[1],range[2],by=10)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+# ypos<-39;xpos=1
+# points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+# text(xpos+0.19*xscal,ypos,"Females",col="grey40",cex=1.2)
+# points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+# text(xpos+0.19*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_c4_pyr$b_groupeda.sca,
+                post_fix_c4_pyr$b_groupctrl.wt)
+dif<-exp(dif)
+
+yla<-"Fold-difference in PSA-NCAM IF"
+tckk=-0.018
+ste<-seq(0.5, 2.5,by=0.5)
+mons_poste(dif,1)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.4;xpol<- 1.9
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+
+} ))
+```
+
+
+

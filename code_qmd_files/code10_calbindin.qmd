@@ -1,0 +1,372 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "Calbindin immunofluorescence intensity"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: false
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+
+# Upload of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+library(bayesplot)
+library(gtsummary)
+library(vegan)
+library(knitr)  
+library(ggplot2)  
+  } ) )
+```
+
+# Data upload and wrangling
+
+```{r}
+## Data upload
+load("source_data/myEnvironment.RData")
+
+## Defining new variables
+calb <- calb %>% rename(reg = CbRegion.vermis_hemispheres.)
+calb$group_region <- interaction(calb$reg, calb$group)
+levels(calb$group_region)
+
+#calb$reg <- ifelse(calb$reg == 'hemispheres', 0.5, -0.5)
+calb$mean_gran <- scale(calb$mean_gran)
+calb$group_region <- interaction(calb$group, calb$reg)
+
+## re-ordering factor levels
+calb$group<-relevel(calb$group,ref='ctrl.sca')
+
+## data summary
+summary(calb)
+```
+
+# Data exploration
+
+Does brain regions differ in the calbindin immunofluorescence intensity (***Calb IF***) in molecular layer of the cerebellum? Does sexes differ?
+```{r, fig.height=10, fig.width=7}
+## setting spacing
+
+par(mfrow=c(3,2))
+par(mar=c(7,3.5,1,1))
+par(mgp=c(2,0.6,0))
+
+plot(calb$mean ~ calb$group_region,
+     col=cola[c(1,1,3,3,4,4)],cex.axis=0.8, las=2, xlab='')
+
+plot(calb$mean ~ calb$group_sex,
+     col=cola[c(1,1,3,3,4,4)],cex.axis=0.8, las=2, xlab='')
+
+plot(calb$mean_gran ~ calb$group_region,
+     col=cola[c(1,1,3,3,4,4)],cex.axis=0.8, las=2, xlab='')
+
+plot(calb$mean_gran ~ calb$group_sex,
+     col=cola[c(1,1,3,3,4,4)],cex.axis=0.8, las=2, xlab='')
+
+hist(calb[calb$reg == 'vermis',]$mean,20)
+hist(calb[calb$reg == 'hemispheres',]$mean,20)
+```
+*Calb IF* seems smaller in vermis and in males. The same patters are also seen in granular layers (GL). Distribution is slightly asymmetric and cannot go belong 0. Thus, gamma regression will be compared with Gaussian model
+
+Is there correlation between GL and ML *calb IF* within individuals?
+
+```{r, fig.height=6, fig.width=8}
+calb %>% ggplot(aes(x = mean_gran, y=mean, col=reg)) +
+  geom_point(alpha = 0.9)+
+  facet_wrap(~id) +
+  labs(x = "calb IF in GL", y = "calb IF in ML")
+```
+The correlation is seen in most individuals. Both covariates that vary across individuals (*calb IF* in GL and *region*) will thus be included as a covariate. Due to small sample size, we will not include sex in default, but the model with sex will be compared with this without sex.
+
+
+# Modelling
+We will use gamma regression, with above-mentioned covariates. As there are multiple measurements per slice and region (4 for hemisphere), we will used hierarchical model with random intercepts of *slice* nested in *individual*
+
+## Prior specification
+
+Summary statistics for prior
+```{r}
+
+## gamma
+log(mean(calb$mean))
+sd(log(calb$mean))*5
+
+## Gaussian
+
+mean(calb$mean)
+sd(calb$mean)*c(5, 2, 1.2)
+sd(calb$mean_gran, na.rm=TRUE)*1.2
+```
+
+Setting priors
+```{r}
+calb$group<-relevel(calb$group,ref='ctrl.sca')
+
+## Gaussian
+prior01 <- c(set_prior("student_t(3, 37, 44)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,18)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 11)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0, 11)", class = "b", coef = "regvermis"),
+             set_prior("normal(0, 5.5)", class = "b", coef = "mean_gran"))
+
+## gamma
+prior2 <- c(set_prior("student_t(3, 3.6, 1.24)", class = "b", coef = "Intercept"),
+             set_prior("normal(0, 2)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 1.2)", class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0 ,1.2)", class = "b", coef = "regvermis"),
+             set_prior("normal(0, 1.2)", class = "b", coef = "mean_gran"))
+```
+
+
+## Models fitting and diagnostics
+```{r}
+
+## Gaussian
+calb_model1 <- run_model(
+                brm(mean~0+Intercept+group+reg + mean_gran + (1|id/slice_id),
+                       data=calb, prior = prior01,
+                       family=gaussian(),
+                       save_pars = save_pars(all = TRUE),
+                       iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                       control = list(adapt_delta = 0.99)),
+                       'output/brm/calb_model1', reuse = TRUE)
+
+## Gamma
+calb_model2 <- run_model(
+            brm(mean ~0+Intercept+group+reg+ mean_gran + (1|id/slice_id),
+                       data=calb, prior = prior2,
+                       family=Gamma(link="log"),
+                       save_pars = save_pars(all = TRUE),
+                       iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                       control = list(adapt_delta = 0.99)),
+                       'output/brm/calb_model2', reuse = TRUE)
+
+## chains mixing and convergence
+mcmc_trace(calb_model1, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+
+mcmc_trace(calb_model2, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## model summary
+summary(calb_model1)
+summary(calb_model2)
+
+```
+Both models converged well.  
+
+## PPC
+```{r}
+pla<-pp_check(calb_model1,type='dens_overlay',ndraws = 50)
+plb<-pp_check(calb_model2,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(calb_model1,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(calb_model2,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(calb_model1,type='scatter_avg') 
+plb<-pp_check(calb_model2,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(calb_model1,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(calb_model2,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(calb_model1,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(calb_model2,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+### Are there too influential observations?
+par(mfrow=c(1,2))
+plot(loo(calb_model1));loo(calb_model1)
+plot(loo(calb_model2));loo(calb_model2)
+```
+No serious issues detected. Gaussian model shows suprisingly better properties and fits the data better. Gaussian likelihood thus will be used.
+
+What about inclusion of sex?
+```{r}
+## prior
+prior03 <- c(set_prior("student_t(3, 37, 44)", class = "b", coef = "Intercept"),
+             set_prior("normal(0,18)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 11)"  , class = "b", coef = "groupeda.sca"),
+             set_prior("normal(0, 11)", class = "b", coef = "regvermis"),
+             set_prior("normal(0, 5.5)", class = "b", coef = "mean_gran"),
+             set_prior("normal(0, 11)", class = "b", coef = "sex_num"))
+
+## model fit
+calb_model3 <- run_model(
+                brm(mean~0+Intercept+group+reg + mean_gran + 
+                      sex_num + (1|id/slice_id),
+                       data=calb, prior = prior03,
+                       family=gaussian(),
+                       save_pars = save_pars(all = TRUE),
+                       iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                       control = list(adapt_delta = 0.99)),
+                       'output/brm/calb_model3', reuse = TRUE)
+
+summary(calb_model3)
+        
+pp_check(calb_model3,type='dens_overlay',ndraws = 50)
+pp_check(calb_model3,type='dens_overlay_grouped',ndraws = 50,group='group') 
+pp_check(calb_model3,type='scatter_avg') 
+pp_check(calb_model3,type="stat_2d", stat = c("max", "min"),ndraws=200)
+pp_check(calb_model3,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+```
+Rhat , ESS and PPC are OK
+
+Lets to compare the predictive accuracy of model with sex
+
+
+## Models comparison
+```{r}
+calb_model1 <- add_criterion(calb_model1, criterion = "loo")
+calb_model3 <- add_criterion(calb_model3, criterion = "loo")
+
+loo_compare(calb_model1, calb_model3)
+```
+There is not evidence of improved accuracy via inclusion of sex, possibly due to inclusion of the covariate *Calbindin IF - GL* which was also different for males and females and arelady provides some adjustment. Model without sex will be used as the final model.
+
+
+## Posterior draws extraction
+```{r}
+post_fix_calb <- as.data.frame(calb_model1, variable = c("b_Intercept","b_groupctrl.wt",
+                                                            "b_groupeda.sca"), )
+names(post_fix_calb)[1]<-"sca_ctrl"
+
+post_fix_calb$wt_ctrl<-post_fix_calb$sca_ctrl+post_fix_calb$b_groupctrl.wt
+post_fix_calb$sca_eda<-post_fix_calb$sca_ctrl+post_fix_calb$b_groupeda.sca
+summary(post_fix_calb)
+
+
+groupquant_calb <- sapply(post_fix_calb[,c(4,1,5)],
+                          function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+```
+
+# Data and model visualization
+
+In data visualization, individual points represent average per subject. Violin plot (area indicating data distribution) was, in contrast, constructed on the basis of individual data points (non-averaged)
+
+```{r, fig.height=4, fig.width=7}
+
+suppressWarnings(suppressMessages( {
+range<-c(0,70);scal<-range[2]-range[1]
+
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+
+
+calb$group<-factor(calb$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Calbindin IF in Cb-ML",las=1, axes=FALSE,cex.lab=1.1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+10;if(x>range[2]){break}}
+
+x<-1
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>3.5){break}}
+
+vioplot(calb$mean~calb$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+calb_sum <- calb %>% group_by(id, group, sex_num) %>% summarize(mean = mean(mean))
+
+
+beeswarm(calb_sum$mean~calb_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+calb_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_calb[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_calb[1,xx],groupquant_calb[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),
+     labels=c(rep("",length(seq(range[1],range[2],by=10)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=10),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,4,by=1)),
+     labels=c(rep("",length(seq(1,4,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+ypos<-12; xpos=1
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.23*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.23*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_calb$b_groupeda.sca,
+                post_fix_calb$b_groupctrl.wt)
+dif<-(dif)
+
+yla<-"Difference in Calb IF"
+tckk=-0.018
+ste<-seq(-30, 30,by=10)
+mons_poste(dif,0)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.6;xpol<- -15
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1)
+
+} ) )
+```
