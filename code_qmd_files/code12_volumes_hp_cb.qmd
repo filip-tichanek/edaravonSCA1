@@ -1,0 +1,499 @@
+---
+title: "Experimental treatment with edaravone in a mouse model of spinocerebellar ataxia 1"
+subtitle: "Hippocampal and cerebellar volume"
+author: "Martina Sucha, Simona Benediktova, Filip Tichanek, Jan Jedlicka, Stepan Kapl, Dana Jelinkova, Zdenka Purkartova, Jan Tuma, Jitka Kuncova, Jan Cendelin"
+format: 
+  html:
+    embed-resources: true
+    keep-md: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    number-depth: 4
+    code-fold: false
+    code-summary: "Open code"
+editor: visual
+project:
+  type: default
+  output-dir: output
+theme: sandstone
+fontsize: 13.5px
+---
+
+This page shows R code for the study [Sucha et al.](https://www.mdpi.com/1422-0067/24/13/10689) (2023, *International Journal of Molecular Science*).
+
+**Citation**:
+
+> Sucha M, Benediktova S, Tichanek F, Jedlicka J, Kapl S, Jelinkova D, Purkartova Z, Tuma J, Kuncova J, Cendelin J. Experimental Treatment with Edaravone in a Mouse Model of Spinocerebellar Ataxia 1. International Journal of Molecular Sciences. 2023; 24(13):10689. https://doi.org/10.3390/ijms241310689
+
+[GitHub page](https://github.com/filip-tichanek/edaravonSCA1): https://github.com/filip-tichanek/edaravonSCA1
+
+This script analysis of hippocampal and cerebellar (molecular layer) volumes. For hippocampus, volume were analysed separately for both hippocampus with subject (mouse, *id*) as random-effect factor.
+
+For hippocampus, volume was already estimated to be smaller in SCA mice ([Tichanek et al.](https://www.nature.com/articles/s41598-020-62308-0)) and this will be reflected in prior specification for the genotype effect
+
+# Upload of packages
+
+```{r}
+rm(list = ls())
+
+suppressWarnings(suppressMessages( {
+library(brms)
+library(beeswarm)
+library(vioplot)
+library(glmmTMB)
+library(car)
+library(cowplot)
+library(ggplot2)
+library(tidyverse)
+library(bayesplot)
+library(gtsummary)
+library(vegan)
+library(knitr)  
+library(ggplot2)  
+  } ) )
+```
+
+# Data upload and wrangling
+
+```{r}
+## Data upload
+load("source_data/myEnvironment.RData")
+
+## new and modified variable for hippocampal dataset 
+hp_vol$id <- as.factor(hp_vol$id)
+hp_vol$group <- factor(hp_vol$group, levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+## new variable for cerebellar dataset
+cbml$group<-relevel(cbml$group,ref='ctrl.sca')
+
+## data summary  
+summary(hp_vol)
+summary(cbml)
+```
+# Hippocampal volume
+
+## Data exploration
+```{r, fig.height=4, fig.width=7}
+## setting spacing
+par(mfrow=c(1,3))
+par(mar=c(4,3.5,1,1))
+par(mgp=c(4,0.6,0))
+
+## both sex together
+plot(hp_vol$volume~hp_vol$group,
+     col=cola, cex.axis=0.8)
+
+
+## by both group and sex
+plot(hp_vol$volume~hp_vol$group_sex,
+     col=cola[c(1,1,2,2,3,3,4,4)],cex.axis=0.8, las=2)
+
+
+## data distribution
+hist(hp_vol$volume, 12)
+```
+Some values seem to be weirdly smaller and distribution seems to include outliers on low values, or heavy left-tail. This suggest that volume may be better modelled with robust regression. 
+
+
+## Modelling
+
+### Prirs specifications
+
+Summary statistics to get priors
+```{r}
+hp_vol$group<-relevel(hp_vol$group,ref='ctrl.sca')
+
+
+hp_scirep <- glmmTMB(DG_ML_volume~genotype,data=young_scirep)
+summary(hp_scirep)
+
+sd(young_scirep$DG_ML_volume, na.rm=TRUE)
+sd(hp_vol$volume)*c(5, 2, 1.2, 1)
+mean(hp_vol$volume)
+prios(hp_scirep)
+
+```
+In previous publication, the volume was measured in molecular layer of dentate gyrus, so the methodology was slightly different and SD differ. The estimated prior will be thus adjusted for different variability
+
+```{r}
+0.37 *(0.29/0.354)
+0.56 *(0.29/0.354)
+```
+
+Setting priors
+```{r}
+prior01 <- c(set_prior("student_t(3, 1.83, 1.45)", class = "b", coef = "Intercept"),
+             set_prior("normal(0.3, 0.46)", class = "b", coef = "groupctrl.wt"),
+             set_prior("normal(0, 0.34)"  , class = "b", coef = "groupeda.sca"))
+```
+
+### Model fitting
+Robust will be preffered, but compare it also with simpler Gaussian
+```{r}
+m_hp_vol <- run_model(
+        brm(volume~0+Intercept+group+ (1|id),
+                data=hp_vol, prior = prior01,
+                family=student(),
+                save_pars = save_pars(all = TRUE),
+                iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                control = list(adapt_delta = 0.99)),
+               'output/brm/m_hp_vol', reuse = TRUE)
+
+m_hp_vol_g <- run_model(
+        brm(volume~0+Intercept+group+ (1|id),
+                data=hp_vol, prior = prior01,
+                family= gaussian(),
+                save_pars = save_pars(all = TRUE),
+                iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                control = list(adapt_delta = 0.99)),
+               'output/brm/m_hp_vol_g', reuse = TRUE)
+
+## chains for crucial fixed-effect predictors      
+mcmc_trace(m_hp_vol, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+mcmc_trace(m_hp_vol_g, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## summary of models
+
+summary(m_hp_vol)
+summary(m_hp_vol_g)
+```
+Both shows good convergence, sufficient ESS and practically the same results
+
+### PPC
+```{r}
+pla<-pp_check(m_hp_vol,type='dens_overlay',ndraws = 50)
+plb<-pp_check(m_hp_vol_g,type='dens_overlay',ndraws = 50) 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(m_hp_vol,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plb<-pp_check(m_hp_vol_g,type='dens_overlay_grouped',ndraws = 50,group='group') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(m_hp_vol,type='scatter_avg') 
+plb<-pp_check(m_hp_vol_g,type='scatter_avg') 
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(m_hp_vol,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plb<-pp_check(m_hp_vol_g,type="stat_2d", stat = c("max", "min"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+pla<-pp_check(m_hp_vol,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plb<-pp_check(m_hp_vol_g,type="stat_2d", stat = c("mean", "sd"),ndraws=200)
+plot_grid(pla, plb, labels=c("A", "B"), ncol = 1, nrow = 2)
+
+### Are there too influential observations?
+par(mfrow=c(1,2))
+plot(loo(m_hp_vol));loo(m_hp_vol)
+plot(loo(m_hp_vol_g));loo(m_hp_vol_g)
+```
+Both show good PPC. However, as expected, Gaussian model show overly influential observations (low-values outliers). Robust regression is thus natural choice. 
+
+### Posterior draws extraction
+```{r}
+
+post_fix_hp_vol <- as.data.frame(m_hp_vol, variable = c("b_Intercept","b_groupctrl.wt",
+                                                      "b_groupeda.sca"), )
+names(post_fix_hp_vol)[1]<-"sca_ctrl"
+
+post_fix_hp_vol$wt_ctrl<-post_fix_hp_vol$sca_ctrl+post_fix_hp_vol$b_groupctrl.wt
+post_fix_hp_vol$sca_eda<-post_fix_hp_vol$sca_ctrl+post_fix_hp_vol$b_groupeda.sca
+summary(post_fix_hp_vol)
+
+groupquant_hp_vol<-sapply(post_fix_hp_vol[,c(4,1,5)],
+                          function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+```
+## Data and model visualization
+
+In data visualization, individual points represent average per subject. Violin plot (area indicating data distribution) was, in contrast, constructed on the basis of individual data points (non-averaged, 1 animals thus generated two data-points)
+
+```{r, fig.height=4.11, fig.width=7.5}
+
+suppressWarnings(suppressMessages( {
+range<-c(0,2.5);scal<-range[2]-range[1]
+
+par(mfrow=c(1,2))
+par(mar=c(2,3,0,0))
+par(mgp=c(2,0.6,0))
+
+
+hp_vol$group<-factor(hp_vol$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Hippocampal (DG-ML) volume (mm^3)",las=1, axes=FALSE,cex.lab=1.1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+0.5;if(x>range[2]){break}}
+
+x<-0
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>3.5){break}}
+
+vioplot(hp_vol$vol~hp_vol$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+hp_vol_sum <- hp_vol %>% group_by(id, group, sex_num) %>% summarize(hpvoll = mean(volume))
+
+
+beeswarm(hp_vol_sum$hpvoll~hp_vol_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+hp_vol_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_hp_vol[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_hp_vol[1,xx],groupquant_hp_vol[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.5),
+     labels=c(rep("",length(seq(range[1],range[2],by=0.5)))),pos=xrange[1],tck=tckk)
+axis(2,las=2,cex.axis=1.1,at=seq(range[1],range[2],by=0.5),pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,3,by=1)),
+     labels=c(rep("",length(seq(1,3,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+ypos<-0.6;xpos=1
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.24*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.24*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_hp_vol$b_groupeda.sca,
+                post_fix_hp_vol$b_groupctrl.wt)
+dif<-(dif)
+
+yla<-"Difference in HP-ML volume"
+tckk=-0.018
+ste<-seq(-0.8, 1.2,by=0.4)
+mons_poste(dif,0)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.6;xpol<- -0.32
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1, srt = 0)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1, srt = 0)
+
+
+} ) )
+```
+
+
+# Cerebellar volumes
+
+The analysis will be done in the same way as for hippocampus
+
+# Data exploration
+
+```{r, fig.height=4, fig.width=7}
+## setting spacing
+par(mfrow=c(1,3))
+par(mar=c(4,3.5,1,1))
+par(mgp=c(4,0.6,0))
+
+## both sex together
+plot(cbml$volume~cbml$group,
+     col=cola, cex.axis=0.8)
+
+
+## by both group and sex
+plot(cbml$volume~cbml$group_sex,
+     col=cola[c(1,1,2,2,3,3,4,4)],cex.axis=0.8, las=2)
+
+
+## data distribution
+hist(cbml$volume, 12)
+
+
+```
+Similar patter as for the hippocampus
+
+## Modelling
+
+### Setting priors
+
+Summary statistics for prior specification
+
+```{r}
+  sd(cbml$volume)*c(5, 2, 1.2, 1)
+  mean(cbml$volume)
+```
+
+Prior specification
+
+```{r}
+ cbml$group<-relevel(cbml$group,ref='ctrl.sca')
+
+  prior01 <- c(set_prior("student_t(3, 19, 8)", class = "b", coef = "Intercept"),
+               set_prior("normal(0, 3.15)", class = "b", coef = "groupctrl.wt"),
+               set_prior("normal(0, 1.9)"  , class = "b", coef = "groupeda.sca"))
+```
+
+### Fitting the model
+
+```{r}
+  m_cbml <- run_model(brm(volume~0+Intercept+group,
+                data=cbml, prior = prior01,
+                family=student(),
+                save_pars = save_pars(all = TRUE),
+                iter=8000, warmup=2000,chains=2,cores=2,seed=17,
+                control = list(adapt_delta = 0.999)),
+             'output/brm/m_cbml', reuse = TRUE)
+  
+## chains mixing and convergence
+mcmc_trace(m_cbml, pars = c('b_Intercept',
+                               'b_groupctrl.wt',
+                               'b_groupeda.sca'))
+
+## model summary
+summary(m_cbml)
+```
+Convergence and ESS are fine
+
+### PPC
+```{r}
+pp_check(m_cbml,type='dens_overlay',ndraws = 50)
+pp_check(m_cbml,type='dens_overlay_grouped',ndraws = 50,group='group')
+pp_check(m_cbml,type='scatter_avg', ndraws = 50)
+pp_check(m_cbml,type="stat_2d", stat = c("max", "min"),ndraws=100)
+pp_check(m_cbml,type="stat_2d", stat = c("mean", "sd"),ndraws=100)
+```
+
+### Extraction of posterior samples
+```{r}
+post_fix_cbml <- as.data.frame(m_cbml, variable = c("b_Intercept","b_groupctrl.wt",
+                                                        "b_groupeda.sca"), )
+names(post_fix_cbml)[1]<-"sca_ctrl"
+
+post_fix_cbml$wt_ctrl<-post_fix_cbml$sca_ctrl+post_fix_cbml$b_groupctrl.wt
+post_fix_cbml$sca_eda<-post_fix_cbml$sca_ctrl+post_fix_cbml$b_groupeda.sca
+summary(post_fix_cbml)
+
+groupquant_cbml<-sapply(post_fix_cbml[,c(4,1,5)],
+                        function(p) quantile(p, probs = c(0.025,0.975,0.5)))
+```
+
+
+
+## Data and model visualization
+
+
+```{r, fig.height=4.11, fig.width=7.5}
+
+suppressWarnings(suppressMessages( {
+range<-c(12,24);scal<-range[2]-range[1]
+
+par(mfrow=c(1,2))
+par(mar=c(2,3,0.2,0.2))
+par(mgp=c(2,0.6,0))
+
+
+cbml$group<-factor(cbml$group,levels=c('ctrl.wt','ctrl.sca','eda.sca'))
+
+
+xrange<-c(0.5,3.5);xscal=xrange[2]-xrange[1]
+plot(NULL,xlim=c(xrange[1],xrange[2]),ylim=c(range[1],range[2]),xlab="",
+     ylab="Cerebellar (ML) volume (mm^3)",las=1, axes=FALSE,cex.lab=1.1)
+
+rect(xrange[1],range[2],xrange[2],range[1],col="grey92",border=NA)
+x<-range[1]
+repeat{
+  lines(c(xrange[1],xrange[2]),c(x,x),col="white",lwd=0.7)
+  x=x+3;if(x>range[2]){break}}
+
+x<-0
+repeat{
+  lines(c(x,x),c(range[1],range[2]),col="white",lwd=0.7)
+  x=x+1;if(x>3.5){break}}
+
+vioplot(cbml$vol~cbml$group,col=colb[-2],at=c(1:4),add=T,
+        border=cola[-2],axes=FALSE,drawRect=F,lwd=1,wex=0.8)
+
+cbml_sum <- cbml %>% group_by(id, group, sex_num) %>% summarize(cbvoll = mean(volume))
+
+
+beeswarm(cbml_sum$cbvoll~cbml_sum$group,col=cola[-2],at=c(1:3),
+         add=T,pwpch=(16.5+cbml_sum$sex_num), cex=1.2 )
+
+tp<-(groupquant_cbml[3,])
+xx<-1;wid=0.25
+repeat{
+  lines(c(xx-wid,xx+wid),c(tp[xx],tp[xx]),lwd=2,col="black");
+  lines(c(xx,xx),c(groupquant_cbml[1,xx],groupquant_cbml[2,xx]),lwd=1.7,col="black")
+  xx<-xx+1
+  if(xx>3){break}}
+
+tckk=-0.02
+
+axis(2,las=2,cex.axis=1.1,at=c(seq(range[1],14,by=3),14),
+     labels=c('0','2'),pos=xrange[1],tck=tckk)
+
+axis(2,las=2,cex.axis=1.1,at=c(seq(15,range[2],by=3)),,pos=xrange[1],tck=tckk)
+
+axis(side=1,las=1,cex.axis=1.1,at=c(seq(1,3,by=1)),
+     labels=c(rep("",length(seq(1,3,by=1)))),pos=range[1],tck=tckk)
+lines(c(xrange[1],xrange[2]),c(range[1],range[1]))
+text(c(1:3),c(rep(range[1]-0.046*scal,3)),xpd=T,cex=1.1,col=cola[-2],
+     c("Wt", "SCA1", "SCA1"))
+ypo<-c(range[1]-0.1*scal,range[1]-0.1*scal)
+text(c(1:4),c(ypo[1],ypo[2],ypo[1],ypo[2]),xpd=T,cex=1.1,col=cola[-2],
+     c("0", "0", "edv"))
+
+ypos<-14;xpos=1
+points(xpos,ypos,pch=16,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.24*xscal,ypos,"Females",col="grey40",cex=1.2)
+points(xpos,ypos-0.08*scal,pch=17,cex=1.4,col=rgb(0.4,0.4,0.4,alpha=0.6))
+text(xpos+0.24*xscal,ypos-0.08*scal,"Males",col="grey40",cex=1.2)
+
+### probability distributions --------
+ypos<-0.6;xpos=1
+range=c(0, 24)
+scal = 12
+par(mar=c(2.2,1,0,0))
+dif<-data.frame(post_fix_cbml$b_groupeda.sca,
+                post_fix_cbml$b_groupctrl.wt)
+dif<-(dif)
+
+yla<- "Difference in CB-ML volume"
+tckk= -0.018
+ste<- seq(-4, 6, by=2)
+mons_poste(dif,0)
+
+zpos=seq(-0.05,1,1/2)
+xx=1;ind=0.8;xpol<- -3.05
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "SCA1: ed x 0 ",cex=1, srt = 0)
+xx=xx+1
+
+text(xpol,zpos[xx]+zpos[2]*ind,
+     "0: Wt x SCA1",cex=1, srt = 0)
+
+
+} ) )
+```
